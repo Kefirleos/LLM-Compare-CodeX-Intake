@@ -181,6 +181,23 @@ function streamFixture(body: ComparisonRequest) {
   return events;
 }
 
+it.each(['valid', 'mismatch', 'wrong attempt', 'missing start'] as const)('validates Thinking in the client stream: %s', async (scenario) => {
+  const body = input();
+  const events = streamFixture(body);
+  const first = body.targets[0]!;
+  const common = { v: 1 as const, runId: body.runId, turnId: body.turnId, columnId: first.columnId, attemptId: first.attemptId, modelId: first.modelId, seq: 0 };
+  events.splice(2, 0, { ...common, type: 'reasoning_started' }, { ...common, type: 'reasoning_delta', text: 'мысль' }, { ...common, type: 'reasoning_ended' });
+  const terminal = events.find((event) => event.type === 'model_result');
+  if (terminal?.type === 'model_result') terminal.result.reasoning = scenario === 'mismatch' ? 'подмена' : 'мысль';
+  if (scenario === 'wrong attempt') Object.assign(events[3]!, { attemptId: randomUUID() });
+  if (scenario === 'missing start') events.splice(2, 1);
+  events.forEach((event, i) => { event.seq = i + 1; });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes(events.map((event) => JSON.stringify(event)).join('\n'), 7), { headers: { 'content-type': 'application/x-ndjson' } })));
+  const promise = sendComparison(body, new AbortController().signal, vi.fn());
+  if (scenario === 'valid') expect((await promise).results[0]!.reasoning).toBe('мысль');
+  else await expect(promise).rejects.toThrow();
+});
+
 it.each(['finish', 'truncated', 'text-end', 'error', 'unknown', 'invalid delta'] as const)('normalizes proxy stream: %s', async (scenario) => {
   const events: unknown[] = [{ type: 'start' }, { type: 'reasoning-delta', delta: '' }, { type: 'reasoning-delta', delta: 'private reasoning' }, { type: 'text-delta', delta: 'Ответ 👋' }];
   if (scenario === 'finish') events.push({ type: 'text-end' }, { type: 'finish' });
@@ -190,12 +207,13 @@ it.each(['finish', 'truncated', 'text-end', 'error', 'unknown', 'invalid delta']
   if (scenario === 'invalid delta') events.push({ type: 'text-delta', delta: 42 });
   const transport = vi.fn<typeof fetch>(async () => new Response(bytes(events.map((event) => JSON.stringify(event)).join('\n')), { headers: { 'content-type': 'application/x-ndjson' } }));
   const adapter = new CodexProxyAdapter('fixture-key', transport);
-  const received: string[] = [];
+  const received: unknown[] = [];
   const activity = vi.fn();
   const consume = async () => { for await (const delta of adapter.stream({ modelId: 'openai/test', prompt: 'Вопрос' }, new AbortController().signal, activity)) received.push(delta); };
   if (scenario === 'finish') await consume();
   else await expect(consume()).rejects.toMatchObject({ publicError: { code: scenario === 'error' ? 'GENERATION_FAILED' : 'UPSTREAM_PROTOCOL' } });
-  expect(received).toEqual(['Ответ 👋']);
+  expect(received.filter((chunk) => typeof chunk === 'string')).toEqual(['Ответ 👋']);
+  expect(received).toContainEqual({ type: 'reasoning_delta', text: 'private reasoning' });
   expect(activity).toHaveBeenCalledTimes(2);
   expect(transport).toHaveBeenCalledOnce();
   expect(transport.mock.calls[0]![0]).toBe('https://llm.codex.so/stream');

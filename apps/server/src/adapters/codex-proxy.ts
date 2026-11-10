@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { utf8Bytes, decodeNdjson } from '@llm-compare/contracts';
+import { utf8Bytes, decodeNdjson, serializePrompt } from '@llm-compare/contracts';
 import type { ModelDescriptor } from '@llm-compare/contracts';
-import type { LlmAdapter, PreparedPrompt } from './types.js';
+import type { LlmAdapter, PreparedPrompt, StreamChunk } from './types.js';
 import { AdapterError } from './error.js';
 
 const UPSTREAM_ORIGIN = 'https://llm.codex.so';
@@ -82,7 +82,7 @@ export class CodexProxyAdapter implements LlmAdapter {
           accept: path === '/stream' ? 'application/x-ndjson' : 'application/json',
           ...(payload ? { 'content-type': 'application/json' } : {}),
         },
-        ...(payload ? { body: JSON.stringify({ prompt: payload.prompt, model: payload.modelId }) } : {}),
+        ...(payload ? { body: JSON.stringify({ prompt: serializePrompt(payload.prompt, payload.history ?? []), model: payload.modelId }) } : {}),
         signal,
       });
     } catch {
@@ -124,7 +124,7 @@ export class CodexProxyAdapter implements LlmAdapter {
     return { text: parsed.data.text };
   }
 
-  async *stream(input: PreparedPrompt, signal: AbortSignal, onActivity?: () => void): AsyncGenerator<string> {
+  async *stream(input: PreparedPrompt, signal: AbortSignal, onActivity?: () => void): AsyncGenerator<StreamChunk> {
     const response = await this.request('/stream', signal, input);
     if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/x-ndjson' || !response.body) {
       await response.body?.cancel().catch(() => {});
@@ -139,8 +139,10 @@ export class CodexProxyAdapter implements LlmAdapter {
         if (event.type === 'error') throw new AdapterError({ code: 'GENERATION_FAILED', message: 'Сервис моделей прервал ответ.', retryable: true });
         if ((event.type === 'text-delta' || event.type === 'reasoning-delta') && event.delta.length > 0) onActivity?.();
         if (event.type === 'text-delta') yield event.delta;
+        if (event.type === 'reasoning-start') yield { type: 'reasoning_started' };
+        if (event.type === 'reasoning-delta') yield { type: 'reasoning_delta', text: event.delta };
+        if (event.type === 'reasoning-end') yield { type: 'reasoning_ended' };
         if (event.type === 'finish') { finished = true; break; }
-        // Reasoning stays separate from the answer; presentation belongs to the next stage.
       }
       if (!finished) throw protocolError();
     } catch (error) {

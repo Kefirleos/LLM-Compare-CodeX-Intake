@@ -94,6 +94,22 @@ it('keeps total timeout active during a local pause and ignores late activity', 
   await vi.advanceTimersByTimeAsync(10_000);
 });
 
+it('does not include unpublished answer text when timeout interrupts the transition from Thinking', async () => {
+  const events: OutgoingEvent[] = [];
+  const adapter: LlmAdapter = { mode: 'mock', listModels: async () => [], generate: async () => ({ text: '' }), stream: async function* () {
+    yield { type: 'reasoning_delta', text: 'мысль' }; await wait(20_000); yield 'ещё не отправленный ответ';
+  } };
+  const done = streamComparison(adapter, 'Вопрос', [target()], new AbortController().signal, 30_000, async (event) => {
+    events.push(event);
+    if (event.type === 'reasoning_ended') await wait(20_000);
+  });
+  await vi.advanceTimersByTimeAsync(30_000);
+  await done;
+  expect(results(events)[0]).toMatchObject({ status: 'timed_out', text: '', reasoning: 'мысль' });
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(events.some((event) => event.type === 'answer_delta')).toBe(false);
+});
+
 it('removes timers and the parent abort listener after repeated completions', async () => {
   const parent = new AbortController();
   const add = vi.spyOn(parent.signal, 'addEventListener');

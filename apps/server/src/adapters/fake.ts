@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { ModelDescriptor } from '@llm-compare/contracts';
-import type { GenerationResult, LlmAdapter, PreparedPrompt } from './types.js';
+import type { GenerationResult, LlmAdapter, PreparedPrompt, StreamChunk } from './types.js';
 
 type Scenario = { delayMs: number; outcome: 'success' | 'error' };
 
@@ -39,7 +39,8 @@ export class FakeAdapter implements LlmAdapter {
     if (!scenario) throw new Error('Unknown mock model');
     await setTimeout(scenario.delayMs, undefined, { signal });
     if (scenario.outcome === 'error') throw new Error('Simulated provider failure');
-    const answer = `Тестовый ответ на вопрос: «${input.prompt}».\n\nЭто демонстрационные данные, без обращения к языковой модели.`;
+    const answer = `Тестовый ответ на вопрос: «${input.prompt}».\n\nЭто демонстрационные данные, без обращения к языковой модели.`
+      + (input.history?.length ? `\n\nВ контексте этой тестовой модели: ${input.history.length} завершённых ходов.` : '');
     if (input.modelId !== 'mock-detailed') return { text: answer };
     return { text: [
       '## Демонстрационный ответ', '', answer, '', '### Что можно сравнить', '',
@@ -51,7 +52,7 @@ export class FakeAdapter implements LlmAdapter {
     ].join('\n') };
   }
 
-  async *stream(input: PreparedPrompt, signal: AbortSignal): AsyncGenerator<string> {
+  async *stream(input: PreparedPrompt, signal: AbortSignal): AsyncGenerator<StreamChunk> {
     // Reuse the same fixture; expose actual partial chunks over time in demo mode.
     const result = await this.generate(input, signal);
     for (const chunk of result.text.match(/\S+\s*|\s+/gu) ?? []) {

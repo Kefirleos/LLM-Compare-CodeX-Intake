@@ -1,16 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { comparisonRequestSchema, retryRequestSchema } from '@llm-compare/contracts';
-import type { AttemptResult, ComparisonRequest, ModelCatalog, ModelDescriptor, RetryRequest } from '@llm-compare/contracts';
+import type { ComparisonRequest, ModelCatalog, ModelDescriptor, RetryRequest } from '@llm-compare/contracts';
 import { sendComparison } from '../../api/comparisons';
 import { Composer } from '../composer/Composer';
 import { ModelPicker } from '../models/ModelPicker';
-import { MarkdownAnswer } from '../markdown/MarkdownAnswer';
+import { Answer } from './Answer';
+import { buildHistory, skippedTurns } from './history';
+import type { DisplayResult, Turn } from './history';
 import { fetchCatalog } from '../../api/catalog';
 
 type Column = { columnId: string; model: ModelDescriptor };
-type DisplayResult = AttemptResult | { status: 'pending'; text?: string } | { status: 'network_error' | 'stopped'; message: string; text?: string };
-type Turn = { turnId: string; prompt: string; results: Record<string, DisplayResult> };
 
 const createColumn = (model: ModelDescriptor): Column => ({ columnId: crypto.randomUUID(), model });
 const statusText = (result?: DisplayResult) => {
@@ -22,17 +22,19 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
   const [catalog, setCatalog] = useState(initialCatalog);
   const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [catalogError, setCatalogError] = useState('');
-  const [conversationId] = useState(() => crypto.randomUUID());
+  const [conversationId, setConversationId] = useState(() => crypto.randomUUID());
   const [columns, setColumns] = useState<Column[]>(() => catalog.models.slice(0, 2).map(createColumn));
   const [activeColumn, setActiveColumn] = useState('');
   const [draft, setDraft] = useState('');
   const [turn, setTurn] = useState<Turn | null>(null);
+  const [pastTurns, setPastTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState(false);
   const [error, setError] = useState('');
   const [recoverPrompt, setRecoverPrompt] = useState('');
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 1000px)').matches);
   const lock = useRef(false);
+  const requestEpoch = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const catalogController = useRef<AbortController | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
@@ -75,39 +77,46 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
   async function execute(input: ComparisonRequest | RetryRequest) {
     if (lock.current || catalogController.current || catalogError || ('targets' in input && hasUnavailable)) return;
     lock.current = true;
+    const epoch = ++requestEpoch.current;
     setBusy(true);
     setError('');
     setRecoverPrompt('');
     const targets = 'targets' in input ? input.targets : [input.target];
     const pending = Object.fromEntries(targets.map((target) => [target.columnId, { status: 'pending' as const }]));
     if ('targets' in input) {
-      setTurn({ turnId: input.turnId, prompt: input.prompt, results: pending });
+      if (turn) setPastTurns((current) => [...current, turn]);
+      setTurn({ turnId: input.turnId, prompt: input.prompt, results: pending, targets: structuredClone(input.targets), serializerVersion: 1, attempts: {} });
       setDraft('');
-    } else setTurn((current) => current ? { ...current, results: { ...current.results, ...pending } } : current);
+    } else setTurn((current) => current ? { ...current, results: { ...current.results, ...pending }, attempts: {
+      ...current.attempts, [input.target.columnId]: [...(current.attempts[input.target.columnId] ?? []), current.results[input.target.columnId]!],
+    } } : current);
     const transport = new AbortController();
     controller.current = transport;
     try {
       const response = await sendComparison(input, transport.signal, (event) => {
         if (transport.signal.aborted || controller.current !== transport) return;
         setTurn((current) => {
-          if (current?.turnId !== input.turnId) return current;
+          if (epoch !== requestEpoch.current || current?.turnId !== input.turnId) return current;
           if (event.type === 'model_result') return { ...current, results: { ...current.results, [event.result.columnId]: event.result } };
-          if (event.type !== 'answer_delta') return current;
+          if (event.type !== 'answer_delta' && event.type !== 'reasoning_delta' && event.type !== 'reasoning_started' && event.type !== 'reasoning_ended') return current;
           const previous = current.results[event.columnId];
           if (previous?.status !== 'pending') return current;
-          return { ...current, results: { ...current.results, [event.columnId]: { status: 'pending', text: (previous.text ?? '') + event.text } } };
+          const updated = event.type === 'answer_delta' ? { ...previous, text: (previous.text ?? '') + event.text, reasoningActive: false }
+            : event.type === 'reasoning_delta' ? { ...previous, reasoning: (previous.reasoning ?? '') + event.text, reasoningActive: true }
+              : { ...previous, reasoningActive: event.type === 'reasoning_started' };
+          return { ...current, results: { ...current.results, [event.columnId]: updated } };
         });
       });
       if (transport.signal.aborted) return;
       const results = Object.fromEntries(response.results.map((result) => [result.columnId, result]));
-      setTurn((current) => current?.turnId === input.turnId ? { ...current, results: { ...current.results, ...results } } : current);
+      setTurn((current) => epoch === requestEpoch.current && current?.turnId === input.turnId ? { ...current, results: { ...current.results, ...results } } : current);
     } catch (cause) {
       if (transport.signal.aborted) return;
       const message = cause instanceof Error && cause.name === 'Error' ? cause.message : 'Не удалось получить ответы. Запрос мог быть принят сервером. Автоматический повтор отключён.';
       setError(message);
       setRecoverPrompt(input.prompt);
-      setTurn((current) => current?.turnId === input.turnId ? {
-        ...current, results: { ...current.results, ...Object.fromEntries(targets.filter((target) => current.results[target.columnId]?.status === 'pending').map((target) => [target.columnId, { status: 'network_error' as const, message, text: current.results[target.columnId]?.text ?? '' }])) },
+      setTurn((current) => epoch === requestEpoch.current && current?.turnId === input.turnId ? {
+        ...current, results: { ...current.results, ...Object.fromEntries(targets.filter((target) => current.results[target.columnId]?.status === 'pending').map((target) => [target.columnId, { status: 'network_error' as const, message, text: current.results[target.columnId]?.text ?? '', reasoning: current.results[target.columnId]?.reasoning ?? '' }])) },
       } : current);
       if ('targets' in input) setDraft((current) => current || input.prompt);
     } finally {
@@ -122,21 +131,22 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
   function stop() {
     const transport = controller.current;
     if (!transport) return;
+    requestEpoch.current++;
     transport.abort();
     controller.current = null;
     lock.current = false;
     setBusy(false);
     setTurn((current) => current ? { ...current, results: Object.fromEntries(Object.entries(current.results).map(([id, result]) =>
-      [id, result.status === 'pending' ? { status: 'stopped', text: result.text ?? '', message: 'Запрос остановлен. Полученный текст сохранён.' } : result])) } : current);
+      [id, result.status === 'pending' ? { status: 'stopped', text: result.text ?? '', reasoning: result.reasoning ?? '', message: 'Запрос остановлен. Полученный текст сохранён.' } : result])) } : current);
   }
 
   function submit() {
     if (lock.current) return;
     const parsed = comparisonRequestSchema.safeParse({
-      protocolVersion: 1, conversationId, runId: crypto.randomUUID(), turnId: crypto.randomUUID(), prompt: draft,
-      targets: columns.map((column) => ({ columnId: column.columnId, modelId: column.model.id, attemptId: crypto.randomUUID(), history: [] })),
+      protocolVersion: 1, serializerVersion: 1, conversationId, runId: crypto.randomUUID(), turnId: crypto.randomUUID(), prompt: draft,
+      targets: columns.map((column) => ({ columnId: column.columnId, modelId: column.model.id, attemptId: crypto.randomUUID(), history: buildHistory([...pastTurns, ...(turn ? [turn] : [])], column.columnId) })),
     });
-    if (!parsed.success) { setError('Проверьте вопрос и выберите от двух до четырёх моделей.'); return; }
+    if (!parsed.success) { setError('Не удалось продолжить: проверьте вопрос и выбор моделей. Контекст ограничен 16 парами и 64 КиБ; при превышении начните новое сравнение.'); return; }
     void execute(parsed.data);
   }
 
@@ -144,11 +154,14 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
     if (!turn || lock.current || catalogController.current || catalogError || !availableIds.has(column.model.id)) return;
     const result = turn.results[column.columnId];
     if (!result || result.status === 'pending' || result.status === 'succeeded') return;
-    const input = retryRequestSchema.parse({
-      protocolVersion: 1, conversationId, runId: crypto.randomUUID(), turnId: turn.turnId, prompt: turn.prompt,
-      target: { columnId: column.columnId, modelId: column.model.id, attemptId: crypto.randomUUID(), history: [] },
+    const snapshot = turn.targets.find((target) => target.columnId === column.columnId);
+    if (!snapshot) return;
+    const input = retryRequestSchema.safeParse({
+      protocolVersion: 1, serializerVersion: turn.serializerVersion, conversationId, runId: crypto.randomUUID(), turnId: turn.turnId, prompt: turn.prompt,
+      target: { ...snapshot, attemptId: crypto.randomUUID() },
     });
-    void execute(input);
+    if (!input.success) { setError('Контекст повтора недоступен. Начните новое сравнение.'); return; }
+    void execute(input.data);
   }
 
   function removeColumn(columnId: string) {
@@ -168,7 +181,7 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
       }
       setColumns(updated);
     }
-    setTurn(null); setError(''); setRecoverPrompt('');
+    setTurn(null); setPastTurns([]); setConversationId(crypto.randomUUID()); setError(''); setRecoverPrompt('');
   }
 
   return <>
@@ -176,7 +189,7 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
       <button disabled={busy || catalogRefreshing} onClick={() => { void refreshCatalog(); }}>{catalogRefreshing ? 'Обновление…' : 'Обновить модели'}</button>
       <button onClick={reset} disabled={busy || catalogRefreshing || (!turn && !hasUnavailable)}>Новое сравнение</button>
     </div></div>
-    <p className="demo-note">{catalog.mode === 'mock' ? 'Тестовые ответы без обращения к языковым моделям.' : 'Ответы языковых моделей через серверный API.'} Каждый вопрос — отдельное сравнение, без контекста предыдущих вопросов.</p>
+    <p className="demo-note">{catalog.mode === 'mock' ? 'Тестовые ответы без обращения к языковым моделям.' : 'Ответы языковых моделей через серверный API.'} Каждая модель продолжает диалог только со своими завершёнными ответами.</p>
     {catalog.models.length < 2 && <p className="notice" role="alert">Для сравнения нужны хотя бы две доступные модели.</p>}
     {hasUnavailable && catalog.models.length >= 2 && <p className="notice" role="alert">Выбранная модель больше недоступна. Начните новое сравнение, чтобы выбрать доступные модели. Прежние ответы сохранены до сброса.</p>}
     {catalogError && <p className="run-error" role="alert">{catalogError}</p>}
@@ -200,26 +213,23 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
       </div>}
       <div className="comparison-grid" style={{ '--columns': columns.length } as CSSProperties}>
         {columns.map((column) => <div key={column.columnId} className={`column-heading ${selectedId === column.columnId ? 'is-selected' : ''}`}>
-          <div><h2>{column.model.displayName}</h2><p>{column.model.provider}</p></div>
+          <div><h2>{column.model.displayName}</h2><p>{column.model.provider}</p>
+            {skippedTurns([...pastTurns, ...(turn ? [turn] : [])], column.columnId) > 0 && <p className="context-note">Неуспешные ходы пропускаются в контексте этой модели. Последний ответ можно повторить перед продолжением.</p>}
+          </div>
           <button className="icon-button" aria-label={`Удалить ${column.model.displayName}`} title={columns.length <= 2 ? 'Минимум две модели' : 'Удалить модель'}
             disabled={busy || catalogRefreshing || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>
         </div>)}
         <div className="add-column"><button ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
-        {turn && <div className="question"><span>Ваш вопрос</span><p>{turn.prompt}</p></div>}
         {!turn && <div className="empty-comparison"><p className="eyebrow">СРАВНЕНИЕ МОДЕЛЕЙ</p><h1>Один вопрос.<br /><span>Несколько ответов.</span></h1><p>Выберите 2–4 модели и задайте вопрос ниже.</p></div>}
-        {columns.map((column) => {
-          const result = turn?.results[column.columnId];
-          return <section key={column.columnId} id={`panel-${column.columnId}`} role={mobile ? 'tabpanel' : 'region'}
-            hidden={!turn || (mobile && selectedId !== column.columnId)} aria-labelledby={mobile ? `tab-${column.columnId}` : undefined}
+        {[...pastTurns, ...(turn ? [turn] : [])].map((view) => <Fragment key={view.turnId}>
+          <div className="question"><span>Ваш вопрос</span><p>{view.prompt}</p></div>
+          {columns.map((column) => <section key={column.columnId} id={view === turn ? `panel-${column.columnId}` : `panel-${view.turnId}-${column.columnId}`}
+            role={mobile && view === turn ? 'tabpanel' : 'region'} hidden={mobile && selectedId !== column.columnId}
+            aria-labelledby={mobile && view === turn ? `tab-${column.columnId}` : undefined}
             className={`answer-cell ${selectedId === column.columnId ? 'is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
-            {result?.status === 'succeeded' ? <>{result.text ? <MarkdownAnswer text={result.text} /> : <p className="muted">Модель вернула пустой ответ.</p>}<p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p></>
-              : result?.status === 'pending' ? <>{result.text && <MarkdownAnswer text={result.text} />}<p className="pending" role="status">Получение ответа…</p></>
-              : result ? <>{result.text && <MarkdownAnswer text={result.text} />}<div className="answer-error"><strong>{statusText(result)}</strong><p>{'message' in result ? result.message : result.error.message}</p>
-                {'totalMs' in result && <p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p>}
-                {('message' in result || result.error.retryable) && <button disabled={busy || catalogBlocked || !availableIds.has(column.model.id)} onClick={() => retry(column)}>Повторить ответ</button>}
-              </div></> : <p className="muted">Модель добавлена после отправки вопроса. Ответ появится при следующем сравнении.</p>}
-          </section>;
-        })}
+            <Answer result={view.results[column.columnId]} retry={view === turn ? () => retry(column) : undefined} disabled={busy || catalogBlocked || !availableIds.has(column.model.id)} />
+          </section>)}
+        </Fragment>)}
       </div>
     </div>
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}

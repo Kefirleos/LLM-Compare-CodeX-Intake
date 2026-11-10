@@ -38,7 +38,7 @@ describe('comparison validation before fan-out', () => {
     ['blank prompt', (body: ComparisonRequest) => { body.prompt = ' \n\t'; }],
     ['UTF-8 byte limit', (body: ComparisonRequest) => { body.prompt = 'я'.repeat(8193); }],
     ['extra field', (body: ComparisonRequest) => { Object.assign(body, { baseURL: 'https://untrusted.invalid' }); }],
-    ['unsupported history', (body: ComparisonRequest) => { Object.assign(body.targets[0]!, { history: [{ user: 'q', assistant: 'a' }] }); }],
+    ['invalid history', (body: ComparisonRequest) => { Object.assign(body.targets[0]!, { history: [{ user: 'q', reasoning: 'not an answer' }] }); }],
   ])('rejects %s without starting generation', async (_name, mutate) => {
     const adapter = new FakeAdapter();
     const generate = vi.spyOn(adapter, 'generate');

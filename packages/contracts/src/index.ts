@@ -43,6 +43,14 @@ export type ModelCatalog = z.infer<typeof modelCatalogSchema>;
 
 export const MAX_PROMPT_BYTES = 16 * 1024;
 export const utf8Bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+export const MAX_CONTEXT_BYTES = 64 * 1024;
+export const historyPairSchema = z.strictObject({ user: z.string().min(1).max(MAX_PROMPT_BYTES), assistant: z.string().max(512 * 1024) });
+export type HistoryPair = z.infer<typeof historyPairSchema>;
+export function serializePrompt(prompt: string, history: readonly HistoryPair[]): string {
+  if (!history.length) return prompt;
+  return 'Продолжи диалог. Ниже JSON с завершёнными парами user/assistant и текущим question. Ответь на question с учётом history.\n'
+    + JSON.stringify({ version: 1, history, question: prompt });
+}
 
 const promptSchema = z.string().max(MAX_PROMPT_BYTES)
   .refine((value) => value.trim().length > 0, 'Введите вопрос.')
@@ -52,8 +60,7 @@ export const comparisonTargetSchema = z.strictObject({
   columnId: z.uuid(),
   modelId: z.string().min(1).max(256),
   attemptId: z.uuid(),
-  // This version accepts standalone questions only.
-  history: z.array(z.never()).max(0),
+  history: z.array(historyPairSchema).max(16),
 });
 
 const requestFields = {
@@ -62,12 +69,18 @@ const requestFields = {
   runId: z.uuid(),
   turnId: z.uuid(),
   prompt: promptSchema,
+  serializerVersion: z.literal(1).optional(),
 };
+
+function contextFits(prompt: string, target: { history: HistoryPair[] }) {
+  return utf8Bytes(serializePrompt(prompt, target.history)) <= MAX_CONTEXT_BYTES;
+}
 
 export const comparisonRequestSchema = z.strictObject({
   ...requestFields,
   targets: z.array(comparisonTargetSchema).min(2).max(4),
-}).superRefine(({ targets }, context) => {
+}).superRefine(({ targets, prompt }, context) => {
+  if (targets.some((target) => !contextFits(prompt, target))) context.addIssue({ code: 'custom', path: ['targets'], message: 'Контекст превышает 64 КиБ. Начните новое сравнение.' });
   for (const field of ['columnId', 'modelId', 'attemptId'] as const) {
     if (new Set(targets.map((target) => target[field])).size !== targets.length) {
       context.addIssue({ code: 'custom', path: ['targets'], message: `Duplicate ${field}` });
@@ -78,13 +91,15 @@ export const comparisonRequestSchema = z.strictObject({
 export const retryRequestSchema = z.strictObject({
   ...requestFields,
   target: comparisonTargetSchema,
-});
+}).refine(({ prompt, target }) => contextFits(prompt, target), 'Контекст превышает 64 КиБ. Начните новое сравнение.');
 
 const resultFields = {
   columnId: z.uuid(),
   attemptId: z.uuid(),
   modelId: z.string(),
   totalMs: z.number().nonnegative(),
+  reasoning: z.string().optional(),
+  reasoningMs: z.number().nonnegative().optional(),
 };
 
 export const attemptResultSchema = z.discriminatedUnion('status', [
@@ -119,6 +134,9 @@ export const streamEventSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...eventFields, type: z.literal('run_completed') }),
   z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('model_started') }),
   z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('answer_delta'), text: z.string() }),
+  z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('reasoning_started') }),
+  z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('reasoning_delta'), text: z.string() }),
+  z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('reasoning_ended') }),
   z.strictObject({ ...eventFields, type: z.literal('model_result'), result: attemptResultSchema }),
 ]);
 export type StreamEvent = z.infer<typeof streamEventSchema>;

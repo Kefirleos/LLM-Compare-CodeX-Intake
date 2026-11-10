@@ -38,6 +38,95 @@ function responseFor(input: ComparisonRequest | RetryRequest, failSecond = false
 }
 
 describe('comparison interface', () => {
+  it('continues separate histories and retries the latest question with its original snapshot', async () => {
+    send.mockImplementation(async (input) => responseFor(input, input.prompt === 'Q2' && 'targets' in input));
+    await mount();
+    const user = userEvent.setup();
+    const textarea = screen.getByLabelText('Ваш вопрос');
+    await user.type(textarea, 'Q1');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Ответ mock-clear');
+    await user.type(textarea, 'Q2');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Тестовая ошибка');
+    const second = send.mock.calls[1]![0] as ComparisonRequest;
+    expect(second.targets.map((target) => target.history)).toEqual([
+      [{ user: 'Q1', assistant: 'Ответ mock-clear' }], [{ user: 'Q1', assistant: 'Ответ mock-detailed' }],
+    ]);
+    await user.type(textarea, 'Q3');
+    await user.click(screen.getByRole('button', { name: 'Повторить ответ' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Повторить ответ' })).toBeNull());
+    const retry = send.mock.calls[2]![0] as RetryRequest;
+    expect(retry.prompt).toBe('Q2');
+    expect(retry.target.history).toEqual(second.targets[1]!.history);
+    expect(retry.target.attemptId).not.toBe(second.targets[1]!.attemptId);
+    expect(retry.serializerVersion).toBe(1);
+    expect((textarea as HTMLTextAreaElement).value).toBe('Q3');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(4));
+    const third = send.mock.calls[3]![0] as ComparisonRequest;
+    expect(third.targets.map((target) => target.history)).toEqual([
+      [{ user: 'Q1', assistant: 'Ответ mock-clear' }, { user: 'Q2', assistant: 'Ответ mock-clear' }],
+      [{ user: 'Q1', assistant: 'Ответ mock-detailed' }, { user: 'Q2', assistant: 'Ответ mock-detailed' }],
+    ]);
+    expect(screen.getByText('Q1')).toBeTruthy();
+    expect(screen.getByText('Q2')).toBeTruthy();
+  });
+
+  it('skips failed pairs, starts late models with empty history and disables old retries', async () => {
+    send.mockImplementation(async (input) => responseFor(input, input.prompt === 'Q1'));
+    await mount();
+    const user = userEvent.setup();
+    const textarea = screen.getByLabelText('Ваш вопрос');
+    await user.type(textarea, 'Q1');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Тестовая ошибка');
+    await user.click(screen.getByRole('button', { name: 'Добавить модель' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Медленный ответ/ }));
+    await user.type(textarea, 'Q2');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Ответ mock-slow');
+    const second = send.mock.calls[1]![0] as ComparisonRequest;
+    expect(second.targets.map((target) => target.history)).toEqual([[{ user: 'Q1', assistant: 'Ответ mock-clear' }], [], []]);
+    expect(screen.queryByRole('button', { name: 'Повторить ответ' })).toBeNull();
+    expect(screen.getByText('Повтор доступен только для последнего вопроса.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Удалить Демо · Медленный ответ' }));
+    await user.click(screen.getByRole('button', { name: 'Добавить модель' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Медленный ответ/ }));
+    await user.type(textarea, 'Q3');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(3));
+    const third = send.mock.calls[2]![0] as ComparisonRequest;
+    expect(third.targets[2]!.columnId).not.toBe(second.targets[2]!.columnId);
+    expect(third.targets[2]!.history).toEqual([]);
+  });
+
+  it('shows Thinking only for real events, collapses on answer and retains it after Stop', async () => {
+    send.mockImplementation(() => new Promise(() => {}));
+    await mount();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    expect(screen.queryByRole('button', { name: /Thinking/ })).toBeNull();
+    const [body, , update] = send.mock.calls[0]!;
+    const input = body as ComparisonRequest;
+    const target = input.targets[0]!;
+    const base = { v: 1 as const, runId: body.runId, turnId: body.turnId, columnId: target.columnId, modelId: target.modelId, attemptId: target.attemptId };
+    act(() => {
+      update!({ ...base, seq: 1, type: 'reasoning_started' });
+      update!({ ...base, seq: 2, type: 'reasoning_delta', text: 'Тестовое рассуждение' });
+    });
+    expect(screen.getByRole('button', { name: /Thinking/ }).getAttribute('aria-expanded')).toBe('true');
+    act(() => update!({ ...base, seq: 3, type: 'answer_delta', text: 'Ответ модели' }));
+    expect(screen.getByRole('button', { name: /Thinking/ }).getAttribute('aria-expanded')).toBe('false');
+    await user.click(screen.getByRole('button', { name: /Thinking/ }));
+    expect(screen.getByRole('button', { name: /Thinking/ }).getAttribute('aria-expanded')).toBe('true');
+    await user.click(screen.getByRole('button', { name: 'Остановить' }));
+    expect(screen.getByText('Тестовое рассуждение')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Thinking · прервано/ })).toBeTruthy();
+    expect(screen.getByText('Ответ модели')).toBeTruthy();
+  });
+
   it('keeps completed and partial answers on Stop and ignores late events from an older run', async () => {
     send.mockImplementation(() => new Promise(() => {}));
     await mount();

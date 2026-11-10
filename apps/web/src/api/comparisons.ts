@@ -19,6 +19,8 @@ export async function sendComparison(
     const started = new Set<string>();
     const texts = new Map<string, string>();
     const sizes = new Map<string, number>();
+    const reasonings = new Map<string, string>();
+    const thinking = new Set<string>();
     let seq = 0;
     let runStarted = false;
     let completed = false;
@@ -45,14 +47,22 @@ export async function sendComparison(
             started.add(event.columnId);
           } else {
             if (!started.has(identity.columnId)) throw new Error('Отсутствует начало попытки.');
-            if (event.type === 'answer_delta') {
-              const text = (texts.get(event.columnId) ?? '') + event.text;
+            if (event.type === 'reasoning_started') {
+              if (thinking.has(event.columnId)) throw new Error('Повторное начало Thinking.');
+              thinking.add(event.columnId);
+            } else if (event.type === 'reasoning_ended') {
+              if (!thinking.delete(event.columnId)) throw new Error('Thinking не был начат.');
+            } else if (event.type === 'answer_delta' || event.type === 'reasoning_delta') {
+              if (event.type === 'reasoning_delta' && !thinking.has(event.columnId)) throw new Error('Thinking не был начат.');
+              const storage = event.type === 'answer_delta' ? texts : reasonings;
+              const text = (storage.get(event.columnId) ?? '') + event.text;
               const size = (sizes.get(event.columnId) ?? 0) + utf8Bytes(event.text);
               if (size > 512 * 1024) throw new Error('Ответ слишком велик.');
               sizes.set(event.columnId, size);
-              texts.set(event.columnId, text);
+              storage.set(event.columnId, text);
             } else {
               if (event.result.text !== (texts.get(identity.columnId) ?? '')) throw new Error('Текст результата не соответствует потоку.');
+              if ((event.result.reasoning ?? '') !== (reasonings.get(identity.columnId) ?? '')) throw new Error('Thinking результата не соответствует потоку.');
               results.set(event.result.columnId, event.result);
             }
           }

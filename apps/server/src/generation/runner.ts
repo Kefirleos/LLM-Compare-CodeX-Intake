@@ -17,7 +17,7 @@ export async function runComparison(
     const elapsed = () => Math.max(0, performance.now() - startedAt);
     try {
       const result = await withDeadline(
-        (attemptSignal) => adapter.generate({ modelId: target.modelId, prompt }, attemptSignal),
+        (attemptSignal) => adapter.generate({ modelId: target.modelId, prompt, ...(target.history.length ? { history: target.history } : {}) }, attemptSignal),
         signal, timeoutMs,
       );
       if (typeof result.text !== 'string' || utf8Bytes(result.text) > 512 * 1024) {
