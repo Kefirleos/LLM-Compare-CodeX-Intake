@@ -13,8 +13,11 @@
   },
   "packageManager": "npm@11.17.0",
   "devDependencies": {
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.9",
     "@types/node": "24.19.2",
     "concurrently": "10.0.7",
+    "jsdom": "31.0.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "5.1.0"
@@ -23,7 +26,7 @@
     "predev": "npm run build -w @llm-compare/contracts",
     "dev": "concurrently --kill-others -n server,web \"npm run dev -w @llm-compare/server\" \"npm run dev -w @llm-compare/web\"",
     "build": "npm run build -w @llm-compare/contracts && npm run build -w @llm-compare/server && npm run build -w @llm-compare/web",
-    "typecheck": "npm run build -w @llm-compare/contracts && npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build -w @llm-compare/contracts && npm run typecheck --workspaces --if-present && tsc -p tsconfig.tests.json",
     "pretest": "npm run build -w @llm-compare/contracts",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run build",

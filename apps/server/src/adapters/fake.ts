@@ -38,6 +38,9 @@ export class FakeAdapter implements LlmAdapter {
     if (!scenario) throw new Error('Unknown mock model');
     await setTimeout(scenario.delayMs, undefined, { signal });
     if (scenario.outcome === 'error') throw new Error('Simulated provider failure');
-    return { text: `Тестовый ответ на вопрос: «${input.prompt}».\n\nЭто демонстрационные данные, без обращения к языковой модели.` };
+    const detail = input.modelId === 'mock-detailed'
+      ? '\n\nДля сравнения ответов полезно учитывать полноту, ясность и время получения. Здесь можно проверить интерфейс на заранее заданных сценариях.'
+      : '';
+    return { text: `Тестовый ответ на вопрос: «${input.prompt}».\n\nЭто демонстрационные данные, без обращения к языковой модели.${detail}` };
   }
 }
