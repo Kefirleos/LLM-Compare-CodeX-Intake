@@ -1,0 +1,32 @@
+{
+  "name": "llm-compare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24.19.0 <25",
+    "npm": ">=11 <12"
+  },
+  "packageManager": "npm@11.17.0",
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "concurrently": "10.0.7",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  },
+  "scripts": {
+    "predev": "npm run build -w @llm-compare/contracts",
+    "dev": "concurrently --kill-others -n server,web \"npm run dev -w @llm-compare/server\" \"npm run dev -w @llm-compare/web\"",
+    "build": "npm run build -w @llm-compare/contracts && npm run build -w @llm-compare/server && npm run build -w @llm-compare/web",
+    "typecheck": "npm run build -w @llm-compare/contracts && npm run typecheck --workspaces --if-present",
+    "pretest": "npm run build -w @llm-compare/contracts",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
+    "start": "npm run start -w @llm-compare/server"
+  }
+}
