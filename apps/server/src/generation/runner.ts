@@ -2,6 +2,7 @@ import { utf8Bytes } from '@llm-compare/contracts';
 import type { AttemptResult, ComparisonTarget, PublicError } from '@llm-compare/contracts';
 import type { LlmAdapter } from '../adapters/types.js';
 import { DeadlineError, withDeadline } from './deadline.js';
+import { AdapterError } from '../adapters/error.js';
 
 export async function runComparison(
   adapter: LlmAdapter,
@@ -34,6 +35,8 @@ export async function runComparison(
       } else if (signal.aborted) {
         status = 'cancelled';
         publicError = { code: 'CANCELLED', message: 'Запрос прерван.', retryable: true };
+      } else if (error instanceof AdapterError) {
+        publicError = error.publicError;
       }
       return { ...identity, totalMs: elapsed(), status, text: '', error: publicError };
     }

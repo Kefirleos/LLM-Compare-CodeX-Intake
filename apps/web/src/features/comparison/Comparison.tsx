@@ -5,6 +5,8 @@ import type { AttemptResult, ComparisonRequest, ModelCatalog, ModelDescriptor, R
 import { sendComparison } from '../../api/comparisons';
 import { Composer } from '../composer/Composer';
 import { ModelPicker } from '../models/ModelPicker';
+import { MarkdownAnswer } from '../markdown/MarkdownAnswer';
+import { fetchCatalog } from '../../api/catalog';
 
 type Column = { columnId: string; model: ModelDescriptor };
 type DisplayResult = AttemptResult | { status: 'pending' } | { status: 'network_error'; message: string };
@@ -16,7 +18,10 @@ const statusText = (result?: DisplayResult) => {
   return { pending: 'Получение ответа…', succeeded: 'Готово', failed: 'Ошибка', timed_out: 'Таймаут', cancelled: 'Прервано', network_error: 'Соединение прервано' }[result.status];
 };
 
-export function Comparison({ catalog }: { catalog: ModelCatalog }) {
+export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog }) {
+  const [catalog, setCatalog] = useState(initialCatalog);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
   const [conversationId] = useState(() => crypto.randomUUID());
   const [columns, setColumns] = useState<Column[]>(() => catalog.models.slice(0, 2).map(createColumn));
   const [activeColumn, setActiveColumn] = useState('');
@@ -29,10 +34,14 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 1000px)').matches);
   const lock = useRef(false);
   const controller = useRef<AbortController | null>(null);
+  const catalogController = useRef<AbortController | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const selectedId = columns.some((column) => column.columnId === activeColumn) ? activeColumn : columns[0]?.columnId;
+  const availableIds = new Set(catalog.models.map((model) => model.id));
+  const hasUnavailable = columns.length < 2 || columns.some((column) => !availableIds.has(column.model.id));
+  const catalogBlocked = catalogRefreshing || Boolean(catalogError);
 
-  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => () => { controller.current?.abort(); catalogController.current?.abort(); }, []);
   useEffect(() => {
     const media = window.matchMedia('(max-width: 1000px)');
     const update = () => setMobile(media.matches);
@@ -45,8 +54,26 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
     setPicker(false);
   }
 
+  async function refreshCatalog() {
+    if (lock.current || catalogController.current) return;
+    const transport = new AbortController();
+    catalogController.current = transport;
+    setCatalogRefreshing(true);
+    try {
+      const updated = await fetchCatalog(transport.signal, true);
+      if (transport.signal.aborted) return;
+      setCatalog(updated);
+      setCatalogError('');
+    } catch {
+      if (!transport.signal.aborted) setCatalogError('Не удалось обновить каталог. Ответы сохранены. Повторите обновление перед новым запросом.');
+    } finally {
+      if (catalogController.current === transport) catalogController.current = null;
+      if (!transport.signal.aborted) setCatalogRefreshing(false);
+    }
+  }
+
   async function execute(input: ComparisonRequest | RetryRequest) {
-    if (lock.current) return;
+    if (lock.current || catalogController.current || catalogError || ('targets' in input && hasUnavailable)) return;
     lock.current = true;
     setBusy(true);
     setError('');
@@ -93,7 +120,7 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
   }
 
   function retry(column: Column) {
-    if (!turn || lock.current) return;
+    if (!turn || lock.current || catalogController.current || catalogError || !availableIds.has(column.model.id)) return;
     const result = turn.results[column.columnId];
     if (!result || result.status === 'pending' || result.status === 'succeeded') return;
     const input = retryRequestSchema.parse({
@@ -111,14 +138,27 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
   }
 
   function reset() {
-    if (lock.current) return;
+    if (lock.current || catalogController.current) return;
+    if (hasUnavailable) {
+      const updated = columns.filter((column) => availableIds.has(column.model.id));
+      for (const model of catalog.models) {
+        if (updated.length >= Math.max(2, columns.length)) break;
+        if (!updated.some((column) => column.model.id === model.id)) updated.push(createColumn(model));
+      }
+      setColumns(updated);
+    }
     setTurn(null); setError(''); setRecoverPrompt('');
   }
 
   return <>
-    <div className="workspace-toolbar"><span className="badge">{catalog.mode === 'mock' ? 'Демо-режим' : 'Live'}</span><button onClick={reset} disabled={busy || !turn}>Новое сравнение</button></div>
-    <p className="demo-note">Тестовые ответы без обращения к языковым моделям. Каждый вопрос — отдельное сравнение, без контекста предыдущих вопросов.</p>
+    <div className="workspace-toolbar"><span className="badge">{catalog.mode === 'mock' ? 'Демо-режим' : 'Live'}</span><div className="toolbar-actions">
+      <button disabled={busy || catalogRefreshing} onClick={() => { void refreshCatalog(); }}>{catalogRefreshing ? 'Обновление…' : 'Обновить модели'}</button>
+      <button onClick={reset} disabled={busy || catalogRefreshing || (!turn && !hasUnavailable)}>Новое сравнение</button>
+    </div></div>
+    <p className="demo-note">{catalog.mode === 'mock' ? 'Тестовые ответы без обращения к языковым моделям.' : 'Ответы языковых моделей через серверный API.'} Каждый вопрос — отдельное сравнение, без контекста предыдущих вопросов.</p>
     {catalog.models.length < 2 && <p className="notice" role="alert">Для сравнения нужны хотя бы две доступные модели.</p>}
+    {hasUnavailable && catalog.models.length >= 2 && <p className="notice" role="alert">Выбранная модель больше недоступна. Начните новое сравнение, чтобы выбрать доступные модели. Прежние ответы сохранены до сброса.</p>}
+    {catalogError && <p className="run-error" role="alert">{catalogError}</p>}
     <div className="comparison-scroll">
       {mobile && <div className="mobile-tabs" role="tablist" aria-label="Модели" onKeyDown={(event) => {
         const index = columns.findIndex((column) => column.columnId === selectedId);
@@ -141,9 +181,9 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
         {columns.map((column) => <div key={column.columnId} className={`column-heading ${selectedId === column.columnId ? 'is-selected' : ''}`}>
           <div><h2>{column.model.displayName}</h2><p>{column.model.provider}</p></div>
           <button className="icon-button" aria-label={`Удалить ${column.model.displayName}`} title={columns.length <= 2 ? 'Минимум две модели' : 'Удалить модель'}
-            disabled={busy || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>
+            disabled={busy || catalogRefreshing || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>
         </div>)}
-        <div className="add-column"><button ref={addButton} disabled={busy || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
+        <div className="add-column"><button ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
         {turn && <div className="question"><span>Ваш вопрос</span><p>{turn.prompt}</p></div>}
         {!turn && <div className="empty-comparison"><p className="eyebrow">СРАВНЕНИЕ МОДЕЛЕЙ</p><h1>Один вопрос.<br /><span>Несколько ответов.</span></h1><p>Выберите 2–4 модели и задайте вопрос ниже.</p></div>}
         {columns.map((column) => {
@@ -151,11 +191,11 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
           return <section key={column.columnId} id={`panel-${column.columnId}`} role={mobile ? 'tabpanel' : 'region'}
             hidden={!turn || (mobile && selectedId !== column.columnId)} aria-labelledby={mobile ? `tab-${column.columnId}` : undefined}
             className={`answer-cell ${selectedId === column.columnId ? 'is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
-            {result?.status === 'succeeded' ? <><div className="answer-text">{result.text}</div><p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p></>
+            {result?.status === 'succeeded' ? <><MarkdownAnswer text={result.text} /><p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p></>
               : result?.status === 'pending' ? <p className="pending" role="status">Получение ответа…</p>
               : result ? <div className="answer-error"><strong>{statusText(result)}</strong><p>{result.status === 'network_error' ? result.message : result.error.message}</p>
                 {result.status !== 'network_error' && <p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p>}
-                {(result.status === 'network_error' || result.error.retryable) && <button disabled={busy} onClick={() => retry(column)}>Повторить ответ</button>}
+                {(result.status === 'network_error' || result.error.retryable) && <button disabled={busy || catalogBlocked || !availableIds.has(column.model.id)} onClick={() => retry(column)}>Повторить ответ</button>}
               </div> : <p className="muted">Модель добавлена после отправки вопроса. Ответ появится при следующем сравнении.</p>}
           </section>;
         })}
@@ -163,7 +203,7 @@ export function Comparison({ catalog }: { catalog: ModelCatalog }) {
     </div>
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}
     <div className="run-status" role="status">{busy ? 'Запрос отправлен всем выбранным моделям. Дождитесь завершения.' : turn ? 'Сравнение завершено.' : ''}</div>
-    <Composer draft={draft} onChange={setDraft} onSubmit={submit} busy={busy} disabled={columns.length < 2} />
+    <Composer draft={draft} onChange={setDraft} onSubmit={submit} busy={busy} disabled={hasUnavailable || catalogBlocked} />
     {picker && <ModelPicker models={catalog.models} selectedIds={columns.map((column) => column.model.id)} onClose={closePicker} onSelect={(model) => {
       if (lock.current || columns.length >= 4 || columns.some((column) => column.model.id === model.id)) return;
       setColumns((current) => [...current, createColumn(model)]); closePicker();

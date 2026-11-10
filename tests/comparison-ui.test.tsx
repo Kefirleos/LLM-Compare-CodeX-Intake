@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { StrictMode } from 'react';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ComparisonRequest, ComparisonResponse, RetryRequest } from '@llm-compare/contracts';
@@ -8,9 +8,12 @@ import { FakeAdapter } from '../apps/server/src/adapters/fake.js';
 import { Comparison } from '../apps/web/src/features/comparison/Comparison';
 import { Composer } from '../apps/web/src/features/composer/Composer';
 import { sendComparison } from '../apps/web/src/api/comparisons';
+import { fetchCatalog } from '../apps/web/src/api/catalog';
 
 vi.mock('../apps/web/src/api/comparisons', () => ({ sendComparison: vi.fn() }));
+vi.mock('../apps/web/src/api/catalog', () => ({ fetchCatalog: vi.fn() }));
 const send = vi.mocked(sendComparison);
+const fetchModels = vi.mocked(fetchCatalog);
 let mobile = false;
 beforeEach(() => {
   mobile = false;
@@ -130,6 +133,47 @@ describe('comparison interface', () => {
     expect(tabs[1]!.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(tabs[1]);
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves answers when refreshing the catalog and replaces missing models only on explicit reset', async () => {
+    send.mockImplementation(async (input) => responseFor(input));
+    const models = await new FakeAdapter().listModels(new AbortController().signal);
+    fetchModels.mockResolvedValue({ protocolVersion: 1, catalogVersion: 'new', mode: 'mock', models: models.slice(2) });
+    await mount();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Ответ mock-clear');
+    await user.click(screen.getByRole('button', { name: 'Обновить модели' }));
+    await screen.findByText(/Выбранная модель больше недоступна/);
+    expect(screen.getByText('Ответ mock-clear')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Сравнить' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Новое сравнение' }));
+    expect(screen.queryByText('Ответ mock-clear')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Демо · Медленный ответ' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Демо · Ошибка' })).toBeTruthy();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains answers on catalog failure and blocks new requests until refresh succeeds', async () => {
+    send.mockImplementation(async (input) => responseFor(input));
+    fetchModels.mockRejectedValue(new Error('Network failed'));
+    await mount();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Ответ mock-clear');
+    await user.click(screen.getByRole('button', { name: 'Обновить модели' }));
+    await screen.findByText(/Не удалось обновить каталог/);
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Следующий вопрос');
+    expect((screen.getByRole('button', { name: 'Сравнить' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Ответ mock-clear')).toBeTruthy();
+    const models = await new FakeAdapter().listModels(new AbortController().signal);
+    fetchModels.mockResolvedValue({ protocolVersion: 1, catalogVersion: 'fresh', mode: 'mock', models });
+    await user.click(screen.getByRole('button', { name: 'Обновить модели' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Сравнить' }) as HTMLButtonElement).disabled).toBe(false));
     expect(send).toHaveBeenCalledTimes(1);
   });
 });

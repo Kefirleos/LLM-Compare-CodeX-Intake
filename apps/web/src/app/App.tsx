@@ -3,7 +3,7 @@ import type { ModelCatalog } from '@llm-compare/contracts';
 import { fetchCatalog } from '../api/catalog';
 import { Comparison } from '../features/comparison/Comparison';
 
-type CatalogState = { status: 'loading' } | { status: 'error' } | { status: 'ready'; catalog: ModelCatalog };
+type CatalogState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; catalog: ModelCatalog };
 
 export function App() {
   const [state, setState] = useState<CatalogState>({ status: 'loading' });
@@ -14,8 +14,8 @@ export function App() {
     setState({ status: 'loading' });
     void fetchCatalog(controller.signal).then((catalog) => {
       if (!controller.signal.aborted) setState({ status: 'ready', catalog });
-    }).catch(() => {
-      if (!controller.signal.aborted) setState({ status: 'error' });
+    }).catch((cause: unknown) => {
+      if (!controller.signal.aborted) setState({ status: 'error', message: cause instanceof Error && cause.name === 'Error' ? cause.message : 'Не удалось загрузить модели.' });
     });
     return () => controller.abort();
   }, [revision]);
@@ -26,7 +26,7 @@ export function App() {
       <main>
         <section aria-label="Сравнение языковых моделей" aria-busy={state.status === 'loading'}>
           {state.status === 'loading' && <p className="notice" role="status">Загрузка каталога…</p>}
-          {state.status === 'error' && <div className="notice" role="alert"><p>Не удалось загрузить модели.</p><button onClick={() => setRevision((value) => value + 1)}>Повторить</button></div>}
+          {state.status === 'error' && <div className="notice" role="alert"><p>{state.message}</p><button onClick={() => setRevision((value) => value + 1)}>Повторить</button></div>}
           {state.status === 'ready' && <Comparison catalog={state.catalog} />}
         </section>
       </main>

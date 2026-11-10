@@ -32,6 +32,7 @@ export const publicErrorSchema = z.strictObject({
     'CATALOG_UNAVAILABLE', 'INTERNAL_ERROR', 'NOT_FOUND', 'INVALID_REQUEST',
     'MODEL_UNAVAILABLE', 'RUN_CONFLICT', 'BUSY', 'PAYLOAD_TOO_LARGE',
     'GENERATION_FAILED', 'TIMEOUT', 'CANCELLED', 'OUTPUT_LIMIT',
+    'UPSTREAM_AUTH', 'UPSTREAM_RATE_LIMIT', 'UPSTREAM_PROTOCOL', 'UPSTREAM_UNAVAILABLE',
   ]),
   message: z.string(),
   retryable: z.boolean(),

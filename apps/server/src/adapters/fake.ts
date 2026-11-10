@@ -25,6 +25,7 @@ const defaultScenarios: Record<string, Scenario> = {
 };
 
 export class FakeAdapter implements LlmAdapter {
+  readonly mode = 'mock';
   constructor(private readonly scenarios: Readonly<Record<string, Scenario>> = defaultScenarios) {}
 
   async listModels(signal: AbortSignal): Promise<ModelDescriptor[]> {
@@ -38,9 +39,15 @@ export class FakeAdapter implements LlmAdapter {
     if (!scenario) throw new Error('Unknown mock model');
     await setTimeout(scenario.delayMs, undefined, { signal });
     if (scenario.outcome === 'error') throw new Error('Simulated provider failure');
-    const detail = input.modelId === 'mock-detailed'
-      ? '\n\nДля сравнения ответов полезно учитывать полноту, ясность и время получения. Здесь можно проверить интерфейс на заранее заданных сценариях.'
-      : '';
-    return { text: `Тестовый ответ на вопрос: «${input.prompt}».\n\nЭто демонстрационные данные, без обращения к языковой модели.${detail}` };
+    const answer = `Тестовый ответ на вопрос: «${input.prompt}».\n\nЭто демонстрационные данные, без обращения к языковой модели.`;
+    if (input.modelId !== 'mock-detailed') return { text: answer };
+    return { text: [
+      '## Демонстрационный ответ', '', answer, '', '### Что можно сравнить', '',
+      '- Содержание ответов на один вопрос.', '- Измеренное время каждой попытки.',
+      '- Ошибки и повтор отдельной колонки.', '',
+      '| Параметр | Значение |', '| --- | --- |', '| Источник | Тестовый адаптер |', '| Контекст | Один вопрос |', '',
+      '### Пример кода', '', '```javascript', `const question = ${JSON.stringify(input.prompt)};`, 'console.log(question);', '```', '',
+      '> Этот ответ проверяет форматирование и не содержит сведений, полученных от языковой модели.',
+    ].join('\n') };
   }
 }

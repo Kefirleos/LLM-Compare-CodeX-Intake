@@ -10,6 +10,7 @@ export interface GenerationResult {
 }
 
 export interface LlmAdapter {
+  readonly mode: 'mock' | 'live';
   listModels(signal: AbortSignal): Promise<ModelDescriptor[]>;
   generate(input: PreparedPrompt, signal: AbortSignal): Promise<GenerationResult>;
 }

@@ -1,9 +1,13 @@
-import { modelCatalogSchema } from '@llm-compare/contracts';
+import { modelCatalogSchema, publicErrorSchema } from '@llm-compare/contracts';
 
-export async function fetchCatalog(signal: AbortSignal) {
-  const response = await fetch('/api/models', {
+export async function fetchCatalog(signal: AbortSignal, refresh = false) {
+  const response = await fetch(refresh ? '/api/models?refresh=1' : '/api/models', {
     signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
   });
-  if (!response.ok) throw new Error('Каталог моделей недоступен. Попробуйте ещё раз.');
-  return modelCatalogSchema.parse(await response.json());
+  const body: unknown = await response.json();
+  if (!response.ok) {
+    const error = publicErrorSchema.safeParse(body);
+    throw new Error(error.success ? error.data.message : 'Каталог моделей недоступен. Попробуйте ещё раз.');
+  }
+  return modelCatalogSchema.parse(body);
 }

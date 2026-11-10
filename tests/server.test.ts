@@ -64,7 +64,18 @@ describe('server configuration', () => {
   });
 
   it('rejects live mode rather than silently substituting mock data', () => {
-    expect(() => loadConfig({ LLM_MODE: 'live' })).toThrow('LLM_MODE');
+    expect(() => loadConfig({ LLM_MODE: 'live' })).toThrow('LLM_API_KEY');
+  });
+
+  it('does not access credentials in mock mode', () => {
+    const env = Object.defineProperty({}, 'LLM_API_KEY', { get() { throw new Error('Credential accessed'); } });
+    expect(loadConfig(env).mode).toBe('mock');
+  });
+
+  it('requires a real value and a loopback host for live configuration', () => {
+    expect(() => loadConfig({ LLM_MODE: 'live', LLM_API_KEY: 'replace_me' })).toThrow('LLM_API_KEY');
+    expect(() => loadConfig({ LLM_MODE: 'live', LLM_API_KEY: 'test-only-key', HOST: '0.0.0.0' })).toThrow('HOST');
+    expect(loadConfig({ LLM_MODE: 'live', LLM_API_KEY: 'test-only-key' }).mode).toBe('live');
   });
 
   it.each(['0', '65536', 'abc', '3001.5'])('rejects invalid port %s', (port) => {

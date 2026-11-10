@@ -3,9 +3,10 @@ import { comparisonRequestSchema, comparisonResponseSchema, retryRequestSchema }
 import type { ComparisonTarget } from '@llm-compare/contracts';
 import type { LlmAdapter } from '../adapters/types.js';
 import { runComparison } from '../generation/runner.js';
-import { withDeadline } from '../generation/deadline.js';
+import { AdapterError } from '../adapters/error.js';
+import type { CatalogService } from '../catalog/service.js';
 
-export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, timeoutMs: number) {
+export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, timeoutMs: number, catalogs: CatalogService) {
   // Bounded, process-local duplicate protection; no prompt or answer storage.
   const runs = new Map<string, { expiresAt: number; active: boolean }>();
   let activeAttempts = 0;
@@ -39,8 +40,9 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
       try {
         let catalog;
         try {
-          catalog = await withDeadline((signal) => adapter.listModels(signal), controller.signal, 5000);
-        } catch {
+          catalog = (await catalogs.get(controller.signal)).models;
+        } catch (error) {
+          if (error instanceof AdapterError) return reply.code(503).send(error.publicError);
           return reply.code(503).send({ code: 'CATALOG_UNAVAILABLE', message: 'Не удалось проверить каталог моделей.', retryable: true });
         }
         const allowed = new Set(catalog.map((model) => model.id));
