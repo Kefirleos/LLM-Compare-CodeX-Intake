@@ -92,7 +92,7 @@ export const attemptResultSchema = z.discriminatedUnion('status', [
   z.strictObject({
     ...resultFields,
     status: z.enum(['failed', 'timed_out', 'cancelled']),
-    text: z.literal(''),
+    text: z.string(),
     error: publicErrorSchema,
   }),
 ]);
@@ -111,3 +111,51 @@ export type RetryRequest = z.infer<typeof retryRequestSchema>;
 export type AttemptResult = z.infer<typeof attemptResultSchema>;
 export type ComparisonResponse = z.infer<typeof comparisonResponseSchema>;
 export type PublicError = z.infer<typeof publicErrorSchema>;
+
+const eventFields = { v: z.literal(1), runId: z.uuid(), turnId: z.uuid(), seq: z.number().int().positive() };
+const eventTarget = { columnId: z.uuid(), attemptId: z.uuid(), modelId: z.string() };
+export const streamEventSchema = z.discriminatedUnion('type', [
+  z.strictObject({ ...eventFields, type: z.literal('run_started') }),
+  z.strictObject({ ...eventFields, type: z.literal('run_completed') }),
+  z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('model_started') }),
+  z.strictObject({ ...eventFields, ...eventTarget, type: z.literal('answer_delta'), text: z.string() }),
+  z.strictObject({ ...eventFields, type: z.literal('model_result'), result: attemptResultSchema }),
+]);
+export type StreamEvent = z.infer<typeof streamEventSchema>;
+
+// Shared bounded UTF-8 line decoder. A complete final JSON line without LF is accepted.
+export async function* decodeNdjson(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncGenerator<unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let buffer = '';
+  let bytes = 0;
+  let complete = false;
+  const abort = () => { void reader.cancel().catch(() => {}); };
+  signal.addEventListener('abort', abort, { once: true });
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const chunk = await reader.read();
+      signal.throwIfAborted();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 32 * 1024 * 1024) throw new Error('Поток превышает допустимый размер.');
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let end: number;
+      while ((end = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        if (utf8Bytes(line) > 4 * 1024 * 1024) throw new Error('Строка потока слишком велика.');
+        if (line.trim()) yield JSON.parse(line) as unknown;
+      }
+      if (utf8Bytes(buffer) > 4 * 1024 * 1024) throw new Error('Строка потока слишком велика.');
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) yield JSON.parse(buffer) as unknown;
+    complete = true;
+  } finally {
+    signal.removeEventListener('abort', abort);
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}

@@ -38,6 +38,55 @@ function responseFor(input: ComparisonRequest | RetryRequest, failSecond = false
 }
 
 describe('comparison interface', () => {
+  it('keeps completed and partial answers on Stop and ignores late events from an older run', async () => {
+    send.mockImplementation(() => new Promise(() => {}));
+    await mount();
+    const user = userEvent.setup();
+    const textarea = screen.getByLabelText('Ваш вопрос');
+    await user.type(textarea, 'Вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    const [body, signal, update] = send.mock.calls[0]!;
+    const response = responseFor(body);
+    const common = { v: 1 as const, runId: body.runId, turnId: body.turnId };
+    const first = response.results[0]!;
+    const second = response.results[1]!;
+    act(() => {
+      update!({ ...common, seq: 1, type: 'model_result', result: first });
+      update!({ ...common, seq: 2, type: 'answer_delta', columnId: second.columnId, attemptId: second.attemptId, modelId: second.modelId, text: 'Частичный ответ' });
+    });
+    expect(screen.getByText('Частичный ответ')).toBeTruthy();
+    await user.type(textarea, 'Следующий вопрос');
+    await user.click(screen.getByRole('button', { name: 'Остановить' }));
+    expect(signal.aborted).toBe(true);
+    expect(screen.getByText('Ответ mock-clear')).toBeTruthy();
+    expect(screen.getByText('Частичный ответ')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    act(() => update!({ ...common, seq: 3, type: 'model_result', result: second }));
+    expect(screen.queryByText('Ответ mock-detailed')).toBeNull();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves a finished column and partial text after a broken stream', async () => {
+    let fail!: (reason: Error) => void;
+    send.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await mount();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    const [body, , update] = send.mock.calls[0]!;
+    const response = responseFor(body);
+    const common = { v: 1 as const, runId: body.runId, turnId: body.turnId };
+    const target = response.results[1]!;
+    await act(async () => {
+      update!({ ...common, seq: 1, type: 'model_result', result: response.results[0]! });
+      update!({ ...common, seq: 2, type: 'answer_delta', columnId: target.columnId, attemptId: target.attemptId, modelId: target.modelId, text: 'Частичный ответ' });
+      fail(new Error('Поток оборван'));
+    });
+    expect(screen.getByText('Ответ mock-clear')).toBeTruthy();
+    expect(screen.getByText('Частичный ответ')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Повторить ответ' })).toHaveLength(1);
+  });
+
   it('starts with two models and prevents removing either one', async () => {
     await mount();
     const remove = screen.getAllByRole('button', { name: /^Удалить/ }) as HTMLButtonElement[];

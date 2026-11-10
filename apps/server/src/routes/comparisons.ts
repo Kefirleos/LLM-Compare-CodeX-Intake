@@ -5,6 +5,8 @@ import type { LlmAdapter } from '../adapters/types.js';
 import { runComparison } from '../generation/runner.js';
 import { AdapterError } from '../adapters/error.js';
 import type { CatalogService } from '../catalog/service.js';
+import { streamComparison } from '../generation/stream.js';
+import type { OutgoingEvent } from '../generation/stream.js';
 
 export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, timeoutMs: number, catalogs: CatalogService) {
   // Bounded, process-local duplicate protection; no prompt or answer storage.
@@ -50,6 +52,42 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
           code: 'MODEL_UNAVAILABLE', message: 'Одна из моделей недоступна. Обновите каталог.', retryable: false,
         });
         accepted = true;
+        if (request.headers.accept === 'application/x-ndjson') {
+          reply.hijack();
+          reply.raw.writeHead(200, {
+            'Content-Type': 'application/x-ndjson; charset=utf-8',
+            'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no',
+          });
+          reply.raw.flushHeaders();
+          let seq = 0;
+          let queue = Promise.resolve();
+          const emit = (event: OutgoingEvent) => {
+            // Each producer awaits its write: at most four pending records, no unbounded queue.
+            queue = queue.then(async () => {
+              controller.signal.throwIfAborted();
+              const record = JSON.stringify({ v: 1, runId: input.runId, turnId: input.turnId, seq: ++seq, ...event }) + '\n';
+              if (reply.raw.write(record)) return;
+              await new Promise<void>((resolve, reject) => {
+                const cleanup = () => { clearTimeout(timer); reply.raw.off('drain', drain); controller.signal.removeEventListener('abort', abort); };
+                const drain = () => { cleanup(); resolve(); };
+                const abort = () => { cleanup(); reject(new Error('Stream closed')); };
+                const timer = setTimeout(() => { controller.abort(); }, 5000);
+                reply.raw.once('drain', drain);
+                controller.signal.addEventListener('abort', abort, { once: true });
+                if (controller.signal.aborted) abort();
+              });
+            });
+            return queue;
+          };
+          try {
+            await streamComparison(adapter, input.prompt, targets, controller.signal, timeoutMs, emit);
+          } catch {
+            controller.abort();
+          } finally {
+            reply.raw.end();
+          }
+          return;
+        }
         const results = await runComparison(adapter, input.prompt, targets, controller.signal, timeoutMs);
         return comparisonResponseSchema.parse({
           protocolVersion: 1, conversationId: input.conversationId, runId: input.runId, turnId: input.turnId, results,

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { utf8Bytes } from '@llm-compare/contracts';
+import { utf8Bytes, decodeNdjson } from '@llm-compare/contracts';
 import type { ModelDescriptor } from '@llm-compare/contracts';
 import type { LlmAdapter, PreparedPrompt } from './types.js';
 import { AdapterError } from './error.js';
@@ -10,6 +10,12 @@ const catalogSchema = z.object({
   models: z.array(z.object({ id: z.string().min(1).max(256), name: z.string().min(1).max(512) })).max(1000),
 }).refine(({ models }) => new Set(models.map((model) => model.id)).size === models.length);
 const generationSchema = z.object({ text: z.string() });
+const upstreamEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.enum(['start', 'text-start', 'text-end', 'reasoning-start', 'reasoning-end']) }),
+  z.object({ type: z.enum(['text-delta', 'reasoning-delta']), delta: z.string() }),
+  z.object({ type: z.literal('finish'), finishReason: z.literal('stop').optional() }),
+  z.object({ type: z.literal('error') }),
+]);
 
 const providers: Readonly<Record<string, string>> = {
   openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', deepseek: 'DeepSeek',
@@ -64,7 +70,7 @@ export class CodexProxyAdapter implements LlmAdapter {
     this.#transport = transport;
   }
 
-  private async request(path: '/models' | '/generate', signal: AbortSignal, payload?: PreparedPrompt) {
+  private async request(path: '/models' | '/generate' | '/stream', signal: AbortSignal, payload?: PreparedPrompt) {
     signal.throwIfAborted();
     let response: Response;
     try {
@@ -73,7 +79,7 @@ export class CodexProxyAdapter implements LlmAdapter {
         redirect: 'error',
         headers: {
           'x-api-key': this.#key,
-          accept: 'application/json',
+          accept: path === '/stream' ? 'application/x-ndjson' : 'application/json',
           ...(payload ? { 'content-type': 'application/json' } : {}),
         },
         ...(payload ? { body: JSON.stringify({ prompt: payload.prompt, model: payload.modelId }) } : {}),
@@ -96,11 +102,11 @@ export class CodexProxyAdapter implements LlmAdapter {
       });
       throw protocolError();
     }
-    return readBoundedJson(response, payload ? 4 * 1024 * 1024 : 1024 * 1024);
+    return response;
   }
 
   async listModels(signal: AbortSignal): Promise<ModelDescriptor[]> {
-    const parsed = catalogSchema.safeParse(await this.request('/models', signal));
+    const parsed = catalogSchema.safeParse(await readBoundedJson(await this.request('/models', signal), 1024 * 1024));
     if (!parsed.success) throw protocolError();
     return parsed.data.models.map(({ id, name }) => ({
       id, displayName: name, provider: providers[id.split('/')[0] ?? ''] ?? 'Провайдер не указан',
@@ -110,11 +116,36 @@ export class CodexProxyAdapter implements LlmAdapter {
   }
 
   async generate(input: PreparedPrompt, signal: AbortSignal) {
-    const parsed = generationSchema.safeParse(await this.request('/generate', signal, input));
+    const parsed = generationSchema.safeParse(await readBoundedJson(await this.request('/generate', signal, input), 4 * 1024 * 1024));
     if (!parsed.success) throw protocolError();
     if (utf8Bytes(parsed.data.text) > 512 * 1024) throw new AdapterError({
       code: 'OUTPUT_LIMIT', message: 'Ответ модели превышает допустимый размер.', retryable: false,
     });
     return { text: parsed.data.text };
+  }
+
+  async *stream(input: PreparedPrompt, signal: AbortSignal): AsyncGenerator<string> {
+    const response = await this.request('/stream', signal, input);
+    if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/x-ndjson' || !response.body) {
+      await response.body?.cancel().catch(() => {});
+      throw protocolError();
+    }
+    let finished = false;
+    try {
+      for await (const raw of decodeNdjson(response.body, signal)) {
+        const parsed = upstreamEventSchema.safeParse(raw);
+        if (!parsed.success) throw protocolError();
+        const event = parsed.data;
+        if (event.type === 'error') throw new AdapterError({ code: 'GENERATION_FAILED', message: 'Сервис моделей прервал ответ.', retryable: true });
+        if (event.type === 'text-delta') yield event.delta;
+        if (event.type === 'finish') { finished = true; break; }
+        // Reasoning stays separate from the answer; presentation belongs to the next stage.
+      }
+      if (!finished) throw protocolError();
+    } catch (error) {
+      signal.throwIfAborted();
+      if (error instanceof AdapterError) throw error;
+      throw protocolError();
+    }
   }
 }

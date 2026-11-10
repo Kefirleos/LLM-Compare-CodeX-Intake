@@ -13,7 +13,7 @@ const modelLabels = [
 
 const models: ModelDescriptor[] = modelLabels.map(([id, displayName]) => ({
   id, displayName, provider: 'Тестовый адаптер',
-  capabilities: { streaming: 'unsupported', reasoning: 'unsupported' },
+  capabilities: { streaming: 'supported', reasoning: 'unsupported' },
   pricing: null, metadataSource: 'mock',
 }));
 
@@ -49,5 +49,14 @@ export class FakeAdapter implements LlmAdapter {
       '### Пример кода', '', '```javascript', `const question = ${JSON.stringify(input.prompt)};`, 'console.log(question);', '```', '',
       '> Этот ответ проверяет форматирование и не содержит сведений, полученных от языковой модели.',
     ].join('\n') };
+  }
+
+  async *stream(input: PreparedPrompt, signal: AbortSignal): AsyncGenerator<string> {
+    // Reuse the same fixture; expose actual partial chunks over time in demo mode.
+    const result = await this.generate(input, signal);
+    for (const chunk of result.text.match(/\S+\s*|\s+/gu) ?? []) {
+      await setTimeout(15, undefined, { signal });
+      yield chunk;
+    }
   }
 }

@@ -8,9 +8,10 @@ interface Props {
   disabled: boolean;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  onStop?: () => void;
 }
 
-export function Composer({ draft, busy, disabled, onChange, onSubmit }: Props) {
+export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop }: Props) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
   const [validation, setValidation] = useState('');
@@ -41,7 +42,8 @@ export function Composer({ draft, busy, disabled, onChange, onSubmit }: Props) {
             event.preventDefault(); submit();
           }
         }} />
-      <button className="submit-button" type="submit" disabled={busy || disabled || !draft.trim()}>{busy ? 'Ожидание…' : 'Сравнить'}</button>
+      {busy && onStop ? <button className="submit-button" type="button" onClick={onStop}>Остановить</button>
+        : <button className="submit-button" type="submit" disabled={busy || disabled || !draft.trim()}>{busy ? 'Ожидание…' : 'Сравнить'}</button>}
     </div>
     <div className="composer-footer"><span id="composer-help">Enter — отправить · Shift+Enter — новая строка</span><span>{utf8Bytes(draft)} / {MAX_PROMPT_BYTES} байт</span></div>
     <p id="composer-error" className="field-error" role="status">{validation}</p>

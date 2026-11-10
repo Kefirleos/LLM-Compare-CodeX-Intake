@@ -9,13 +9,13 @@ import { MarkdownAnswer } from '../markdown/MarkdownAnswer';
 import { fetchCatalog } from '../../api/catalog';
 
 type Column = { columnId: string; model: ModelDescriptor };
-type DisplayResult = AttemptResult | { status: 'pending' } | { status: 'network_error'; message: string };
+type DisplayResult = AttemptResult | { status: 'pending'; text?: string } | { status: 'network_error' | 'stopped'; message: string; text?: string };
 type Turn = { turnId: string; prompt: string; results: Record<string, DisplayResult> };
 
 const createColumn = (model: ModelDescriptor): Column => ({ columnId: crypto.randomUUID(), model });
 const statusText = (result?: DisplayResult) => {
   if (!result) return 'Готова к вопросу';
-  return { pending: 'Получение ответа…', succeeded: 'Готово', failed: 'Ошибка', timed_out: 'Таймаут', cancelled: 'Прервано', network_error: 'Соединение прервано' }[result.status];
+  return { pending: 'Получение ответа…', succeeded: 'Готово', failed: 'Ошибка', timed_out: 'Таймаут', cancelled: 'Прервано', network_error: 'Соединение прервано', stopped: 'Остановлено' }[result.status];
 };
 
 export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog }) {
@@ -87,7 +87,17 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
     const transport = new AbortController();
     controller.current = transport;
     try {
-      const response = await sendComparison(input, transport.signal);
+      const response = await sendComparison(input, transport.signal, (event) => {
+        if (transport.signal.aborted || controller.current !== transport) return;
+        setTurn((current) => {
+          if (current?.turnId !== input.turnId) return current;
+          if (event.type === 'model_result') return { ...current, results: { ...current.results, [event.result.columnId]: event.result } };
+          if (event.type !== 'answer_delta') return current;
+          const previous = current.results[event.columnId];
+          if (previous?.status !== 'pending') return current;
+          return { ...current, results: { ...current.results, [event.columnId]: { status: 'pending', text: (previous.text ?? '') + event.text } } };
+        });
+      });
       if (transport.signal.aborted) return;
       const results = Object.fromEntries(response.results.map((result) => [result.columnId, result]));
       setTurn((current) => current?.turnId === input.turnId ? { ...current, results: { ...current.results, ...results } } : current);
@@ -97,7 +107,7 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
       setError(message);
       setRecoverPrompt(input.prompt);
       setTurn((current) => current?.turnId === input.turnId ? {
-        ...current, results: { ...current.results, ...Object.fromEntries(targets.map((target) => [target.columnId, { status: 'network_error' as const, message }])) },
+        ...current, results: { ...current.results, ...Object.fromEntries(targets.filter((target) => current.results[target.columnId]?.status === 'pending').map((target) => [target.columnId, { status: 'network_error' as const, message, text: current.results[target.columnId]?.text ?? '' }])) },
       } : current);
       if ('targets' in input) setDraft((current) => current || input.prompt);
     } finally {
@@ -107,6 +117,17 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
         if (!transport.signal.aborted) setBusy(false);
       }
     }
+  }
+
+  function stop() {
+    const transport = controller.current;
+    if (!transport) return;
+    transport.abort();
+    controller.current = null;
+    lock.current = false;
+    setBusy(false);
+    setTurn((current) => current ? { ...current, results: Object.fromEntries(Object.entries(current.results).map(([id, result]) =>
+      [id, result.status === 'pending' ? { status: 'stopped', text: result.text ?? '', message: 'Запрос остановлен. Полученный текст сохранён.' } : result])) } : current);
   }
 
   function submit() {
@@ -191,19 +212,19 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
           return <section key={column.columnId} id={`panel-${column.columnId}`} role={mobile ? 'tabpanel' : 'region'}
             hidden={!turn || (mobile && selectedId !== column.columnId)} aria-labelledby={mobile ? `tab-${column.columnId}` : undefined}
             className={`answer-cell ${selectedId === column.columnId ? 'is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
-            {result?.status === 'succeeded' ? <><MarkdownAnswer text={result.text} /><p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p></>
-              : result?.status === 'pending' ? <p className="pending" role="status">Получение ответа…</p>
-              : result ? <div className="answer-error"><strong>{statusText(result)}</strong><p>{result.status === 'network_error' ? result.message : result.error.message}</p>
-                {result.status !== 'network_error' && <p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p>}
-                {(result.status === 'network_error' || result.error.retryable) && <button disabled={busy || catalogBlocked || !availableIds.has(column.model.id)} onClick={() => retry(column)}>Повторить ответ</button>}
-              </div> : <p className="muted">Модель добавлена после отправки вопроса. Ответ появится при следующем сравнении.</p>}
+            {result?.status === 'succeeded' ? <>{result.text ? <MarkdownAnswer text={result.text} /> : <p className="muted">Модель вернула пустой ответ.</p>}<p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p></>
+              : result?.status === 'pending' ? <>{result.text && <MarkdownAnswer text={result.text} />}<p className="pending" role="status">Получение ответа…</p></>
+              : result ? <>{result.text && <MarkdownAnswer text={result.text} />}<div className="answer-error"><strong>{statusText(result)}</strong><p>{'message' in result ? result.message : result.error.message}</p>
+                {'totalMs' in result && <p className="answer-time">{(result.totalMs / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с</p>}
+                {('message' in result || result.error.retryable) && <button disabled={busy || catalogBlocked || !availableIds.has(column.model.id)} onClick={() => retry(column)}>Повторить ответ</button>}
+              </div></> : <p className="muted">Модель добавлена после отправки вопроса. Ответ появится при следующем сравнении.</p>}
           </section>;
         })}
       </div>
     </div>
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}
-    <div className="run-status" role="status">{busy ? 'Запрос отправлен всем выбранным моделям. Дождитесь завершения.' : turn ? 'Сравнение завершено.' : ''}</div>
-    <Composer draft={draft} onChange={setDraft} onSubmit={submit} busy={busy} disabled={hasUnavailable || catalogBlocked} />
+    <div className="run-status" role="status">{busy ? 'Ответы поступают. Генерацию можно остановить.' : turn ? 'Сравнение завершено.' : ''}</div>
+    <Composer draft={draft} onChange={setDraft} onSubmit={submit} onStop={stop} busy={busy} disabled={hasUnavailable || catalogBlocked} />
     {picker && <ModelPicker models={catalog.models} selectedIds={columns.map((column) => column.model.id)} onClose={closePicker} onSelect={(model) => {
       if (lock.current || columns.length >= 4 || columns.some((column) => column.model.id === model.id)) return;
       setColumns((current) => [...current, createColumn(model)]); closePicker();
