@@ -8,6 +8,7 @@ import { ModelPicker } from '../models/ModelPicker';
 import { Answer } from './Answer';
 import { buildHistory, skippedTurns } from './history';
 import type { DisplayResult, Turn } from './history';
+import { timingLeaders } from './metrics';
 import { fetchCatalog } from '../../api/catalog';
 
 type Column = { columnId: string; model: ModelDescriptor };
@@ -221,15 +222,20 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
         </div>)}
         <div className="add-column"><button ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
         {!turn && <div className="empty-comparison"><p className="eyebrow">СРАВНЕНИЕ МОДЕЛЕЙ</p><h1>Один вопрос.<br /><span>Несколько ответов.</span></h1><p>Выберите 2–4 модели и задайте вопрос ниже.</p></div>}
-        {[...pastTurns, ...(turn ? [turn] : [])].map((view) => <Fragment key={view.turnId}>
+        {[...pastTurns, ...(turn ? [turn] : [])].map((view) => {
+          const visible = Object.fromEntries(columns.flatMap((column) => view.results[column.columnId] ? [[column.columnId, view.results[column.columnId]!]] : []));
+          const leaders = timingLeaders(visible, view !== turn || !busy);
+          return <Fragment key={view.turnId}>
           <div className="question"><span>Ваш вопрос</span><p>{view.prompt}</p></div>
           {columns.map((column) => <section key={column.columnId} id={view === turn ? `panel-${column.columnId}` : `panel-${view.turnId}-${column.columnId}`}
             role={mobile && view === turn ? 'tabpanel' : 'region'} hidden={mobile && selectedId !== column.columnId}
             aria-labelledby={mobile && view === turn ? `tab-${column.columnId}` : undefined}
             className={`answer-cell ${selectedId === column.columnId ? 'is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
-            <Answer result={view.results[column.columnId]} retry={view === turn ? () => retry(column) : undefined} disabled={busy || catalogBlocked || !availableIds.has(column.model.id)} />
+            <Answer result={view.results[column.columnId]} retry={view === turn ? () => retry(column) : undefined} disabled={busy || catalogBlocked || !availableIds.has(column.model.id)}
+              totalLeader={leaders.total.has(column.columnId)} firstAnswerLeader={leaders.firstAnswer.has(column.columnId)} />
           </section>)}
-        </Fragment>)}
+        </Fragment>;
+        })}
       </div>
     </div>
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}

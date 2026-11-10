@@ -60,6 +60,13 @@ h2 { font-size: 14px; font-weight: 550; margin: 0; overflow-wrap: anywhere; }
 .markdown-fallback { font-size: 12px; color: #b4b9c6; }
 .markdown-fallback pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .answer-time { color: #9fa4b1; font-size: 12px; margin-top: 24px; }
+.answer-metrics { color: #a5a8b2; font-size: 11px; margin: 24px 0 12px; border-top: 1px solid #30323b; padding-top: 12px; }
+.answer-metrics dl { margin: 0; display: grid; gap: 7px; }
+.answer-metrics dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+.answer-metrics dd { margin: 0; color: #c9ccd4; font-variant-numeric: tabular-nums; }
+.timing-leaders { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.timing-leaders li { border: 1px solid #49415e; color: #cbbaff; border-radius: 8px; padding: 5px 8px; line-height: 1.5; }
+.metrics-note { margin: 8px 0 0; font-size: 10px; line-height: 1.5; }
 .answer-error { border: 1px solid #65454f; padding: 16px; border-radius: 8px; background: #261c22; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .answer-error strong { color: #f1b5c0; }
 .pending { color: #cbbaff; font-size: 14px; }

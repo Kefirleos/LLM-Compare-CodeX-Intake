@@ -93,6 +93,15 @@ export const retryRequestSchema = z.strictObject({
   target: comparisonTargetSchema,
 }).refine(({ prompt, target }) => contextFits(prompt, target), 'Контекст превышает 64 КиБ. Начните новое сравнение.');
 
+export const attemptMetricsSchema = z.strictObject({
+  firstEventMs: z.number().nonnegative().nullable(),
+  firstAnswerMs: z.number().nonnegative().nullable(),
+  inputTokens: z.null(),
+  outputTokens: z.null(),
+  cost: z.null(),
+}).refine(({ firstEventMs, firstAnswerMs }) => firstAnswerMs === null || (firstEventMs !== null && firstEventMs <= firstAnswerMs), 'Первый ответ не может предшествовать первым данным.');
+export type AttemptMetrics = z.infer<typeof attemptMetricsSchema>;
+
 const resultFields = {
   columnId: z.uuid(),
   attemptId: z.uuid(),
@@ -100,6 +109,7 @@ const resultFields = {
   totalMs: z.number().nonnegative(),
   reasoning: z.string().optional(),
   reasoningMs: z.number().nonnegative().optional(),
+  metrics: attemptMetricsSchema.optional(),
 };
 
 export const attemptResultSchema = z.discriminatedUnion('status', [
@@ -110,7 +120,8 @@ export const attemptResultSchema = z.discriminatedUnion('status', [
     text: z.string(),
     error: publicErrorSchema,
   }),
-]);
+]).refine((result) => !result.metrics || ((result.metrics.firstEventMs === null || result.metrics.firstEventMs <= result.totalMs)
+  && (result.metrics.firstAnswerMs === null || result.metrics.firstAnswerMs <= result.totalMs)), 'Время первого фрагмента превышает полное время попытки.');
 
 export const comparisonResponseSchema = z.strictObject({
   protocolVersion: z.literal(1),

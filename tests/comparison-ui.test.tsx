@@ -38,6 +38,32 @@ function responseFor(input: ComparisonRequest | RetryRequest, failSecond = false
 }
 
 describe('comparison interface', () => {
+  it('shows independent timing leaders only after run completion, with unavailable usage and cost', async () => {
+    let finish!: (response: ComparisonResponse) => void;
+    send.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await mount();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Q');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    const [input, , update] = send.mock.calls[0]!;
+    const response = responseFor(input);
+    response.results.forEach((result, index) => {
+      result.totalMs = index === 0 ? 2000 : 1000;
+      result.metrics = { firstEventMs: 100, firstAnswerMs: index === 0 ? 200 : 300, inputTokens: null, outputTokens: null, cost: null };
+    });
+    act(() => response.results.forEach((result, i) => update!({ v: 1, runId: input.runId, turnId: input.turnId, seq: i + 1, type: 'model_result', result })));
+    expect(screen.queryByRole('list', { name: 'Сравнение времени' })).toBeNull();
+    await act(async () => finish(response));
+    const first = screen.getByRole('region', { name: 'Ответ Демо · Краткий ответ' });
+    const second = screen.getByRole('region', { name: 'Ответ Демо · Подробный ответ' });
+    expect(within(first).getByText('Минимальное время до ответа')).toBeTruthy();
+    expect(within(first).queryByText('Минимальное общее время')).toBeNull();
+    expect(within(second).getByText('Минимальное общее время')).toBeTruthy();
+    expect(within(second).queryByText('Минимальное время до ответа')).toBeNull();
+    expect(within(first).getAllByText('нет данных')).toHaveLength(3);
+    expect(within(first).getByText('Полный ответ')).toBeTruthy();
+  });
+
   it('continues separate histories and retries the latest question with its original snapshot', async () => {
     send.mockImplementation(async (input) => responseFor(input, input.prompt === 'Q2' && 'targets' in input));
     await mount();

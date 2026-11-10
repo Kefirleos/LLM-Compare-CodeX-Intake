@@ -1,5 +1,5 @@
 import { utf8Bytes } from '@llm-compare/contracts';
-import type { AttemptResult, ComparisonTarget, StreamEvent } from '@llm-compare/contracts';
+import type { AttemptMetrics, AttemptResult, ComparisonTarget, StreamEvent } from '@llm-compare/contracts';
 import type { LlmAdapter } from '../adapters/types.js';
 import { AdapterError } from '../adapters/error.js';
 import { DeadlineError, withDeadline, withStreamDeadline, defaultStreamTimeouts } from './deadline.js';
@@ -12,7 +12,13 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
   await emit({ type: 'run_started' });
   await Promise.all(targets.map(async (target) => {
     const identity = { columnId: target.columnId, attemptId: target.attemptId, modelId: target.modelId };
-    const started = performance.now();
+    let started = performance.now();
+    const metrics: AttemptMetrics = { firstEventMs: null, firstAnswerMs: null, inputTokens: null, outputTokens: null, cost: null };
+    const observe = (answer: boolean) => {
+      const elapsed = Math.max(0, performance.now() - started);
+      metrics.firstEventMs ??= elapsed;
+      if (answer) metrics.firstAnswerMs ??= elapsed;
+    };
     let text = '';
     let reasoning = '';
     let reasoningStartedAt: number | null = null;
@@ -35,9 +41,11 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
           try { await emit(event); } finally { clock?.resume(); }
         };
         await publish({ type: 'model_started', ...identity });
+        started = performance.now();
         const append = async (delta: string) => {
           attemptSignal.throwIfAborted();
           if (!delta.length) return;
+          if (adapter.stream) observe(true);
           clock?.activity();
           if (reasoningStartedAt !== null) { closeReasoning(); await publish({ type: 'reasoning_ended', ...identity }); }
           attemptSignal.throwIfAborted();
@@ -56,6 +64,7 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
               continue;
             }
             if (chunk.type === 'reasoning_delta' && !chunk.text.length) continue;
+            if (chunk.type === 'reasoning_delta') observe(false);
             if (reasoningStartedAt === null) { reasoningStartedAt = performance.now(); await publish({ type: 'reasoning_started', ...identity }); }
             attemptSignal.throwIfAborted();
             if (chunk.type === 'reasoning_delta') {
@@ -72,10 +81,10 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
       };
       if (adapter.stream) await withStreamDeadline(operation, signal, timeoutMs, timeouts);
       else await withDeadline(operation, signal, timeoutMs);
-      result = { ...identity, text, ...reasoningResult(), status: 'succeeded', totalMs: performance.now() - started, error: null };
+      result = { ...identity, text, metrics: { ...metrics }, ...reasoningResult(), status: 'succeeded', totalMs: performance.now() - started, error: null };
     } catch (error) {
       const status = signal.aborted ? 'cancelled' : error instanceof DeadlineError ? 'timed_out' : 'failed';
-      result = { ...identity, text, ...reasoningResult(), status, totalMs: performance.now() - started, error:
+      result = { ...identity, text, metrics: { ...metrics }, ...reasoningResult(), status, totalMs: performance.now() - started, error:
         status === 'cancelled' ? { code: 'CANCELLED', message: 'Запрос остановлен.', retryable: true }
           : status === 'timed_out' ? { code: 'TIMEOUT', message: error instanceof DeadlineError && error.reason === 'first_data' ? 'Модель не начала ответ вовремя.'
             : error instanceof DeadlineError && error.reason === 'idle' ? 'Модель слишком долго не присылает данные.' : 'Превышено общее время ответа модели.', retryable: true }
