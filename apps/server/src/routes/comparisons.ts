@@ -7,11 +7,16 @@ import { AdapterError } from '../adapters/error.js';
 import type { CatalogService } from '../catalog/service.js';
 import { streamComparison } from '../generation/stream.js';
 import type { OutgoingEvent } from '../generation/stream.js';
+import type { StreamTimeouts } from '../generation/deadline.js';
 
-export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, timeoutMs: number, catalogs: CatalogService) {
+export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, timeoutMs: number, catalogs: CatalogService, streamTimeouts: StreamTimeouts) {
   // Bounded, process-local duplicate protection; no prompt or answer storage.
   const runs = new Map<string, { expiresAt: number; active: boolean }>();
+  const controllers = new Set<AbortController>();
   let activeAttempts = 0;
+  app.addHook('preClose', async () => {
+    for (const controller of controllers) controller.abort();
+  });
 
   for (const url of ['/api/comparisons', '/api/retries']) {
     app.post(url, async (request, reply) => {
@@ -36,6 +41,7 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
       runs.set(input.runId, { active: true, expiresAt: now + 5 * 60_000 });
       activeAttempts += targets.length;
       const controller = new AbortController();
+      controllers.add(controller);
       const onClose = () => { if (!reply.raw.writableEnded) controller.abort(); };
       reply.raw.once('close', onClose);
       let accepted = false;
@@ -80,7 +86,7 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
             return queue;
           };
           try {
-            await streamComparison(adapter, input.prompt, targets, controller.signal, timeoutMs, emit);
+            await streamComparison(adapter, input.prompt, targets, controller.signal, timeoutMs, emit, streamTimeouts);
           } catch {
             controller.abort();
           } finally {
@@ -93,6 +99,7 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
           protocolVersion: 1, conversationId: input.conversationId, runId: input.runId, turnId: input.turnId, results,
         });
       } finally {
+        controllers.delete(controller);
         activeAttempts -= targets.length;
         reply.raw.removeListener('close', onClose);
         if (accepted) runs.set(input.runId, { active: false, expiresAt: Date.now() + 5 * 60_000 });

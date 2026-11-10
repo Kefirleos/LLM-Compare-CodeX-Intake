@@ -13,5 +13,5 @@ export interface LlmAdapter {
   readonly mode: 'mock' | 'live';
   listModels(signal: AbortSignal): Promise<ModelDescriptor[]>;
   generate(input: PreparedPrompt, signal: AbortSignal): Promise<GenerationResult>;
-  stream?(input: PreparedPrompt, signal: AbortSignal): AsyncIterable<string>;
+  stream?(input: PreparedPrompt, signal: AbortSignal, onActivity?: () => void): AsyncIterable<string>;
 }

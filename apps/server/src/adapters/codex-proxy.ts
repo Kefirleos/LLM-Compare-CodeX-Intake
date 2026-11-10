@@ -124,7 +124,7 @@ export class CodexProxyAdapter implements LlmAdapter {
     return { text: parsed.data.text };
   }
 
-  async *stream(input: PreparedPrompt, signal: AbortSignal): AsyncGenerator<string> {
+  async *stream(input: PreparedPrompt, signal: AbortSignal, onActivity?: () => void): AsyncGenerator<string> {
     const response = await this.request('/stream', signal, input);
     if (response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/x-ndjson' || !response.body) {
       await response.body?.cancel().catch(() => {});
@@ -137,6 +137,7 @@ export class CodexProxyAdapter implements LlmAdapter {
         if (!parsed.success) throw protocolError();
         const event = parsed.data;
         if (event.type === 'error') throw new AdapterError({ code: 'GENERATION_FAILED', message: 'Сервис моделей прервал ответ.', retryable: true });
+        if ((event.type === 'text-delta' || event.type === 'reasoning-delta') && event.delta.length > 0) onActivity?.();
         if (event.type === 'text-delta') yield event.delta;
         if (event.type === 'finish') { finished = true; break; }
         // Reasoning stays separate from the answer; presentation belongs to the next stage.

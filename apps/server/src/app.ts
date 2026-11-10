@@ -4,11 +4,13 @@ import type { LlmAdapter } from './adapters/types.js';
 import { registerComparisons } from './routes/comparisons.js';
 import { AdapterError } from './adapters/error.js';
 import { CatalogService } from './catalog/service.js';
+import { defaultStreamTimeouts } from './generation/deadline.js';
+import type { StreamTimeouts } from './generation/deadline.js';
 
-export function buildApp(adapter: LlmAdapter, options: { attemptTimeoutMs?: number } = {}) {
+export function buildApp(adapter: LlmAdapter, options: { attemptTimeoutMs?: number; streamTimeouts?: StreamTimeouts } = {}) {
   const app = Fastify({ bodyLimit: 256 * 1024, logger: false });
   const catalog = new CatalogService(adapter);
-  app.addHook('onClose', async () => { catalog.close(); });
+  app.addHook('preClose', async () => { catalog.close(); });
 
   app.get('/api/health', async () => ({ status: 'ok' as const }));
   app.get('/api/models', async (_request, reply) => {
@@ -26,7 +28,7 @@ export function buildApp(adapter: LlmAdapter, options: { attemptTimeoutMs?: numb
       });
     }
   });
-  registerComparisons(app, adapter, options.attemptTimeoutMs ?? 10_000, catalog);
+  registerComparisons(app, adapter, options.attemptTimeoutMs ?? 120_000, catalog, options.streamTimeouts ?? defaultStreamTimeouts);
   app.setNotFoundHandler((_request, reply) => reply.code(404).send({
     code: 'NOT_FOUND', message: 'Маршрут не найден.', retryable: false,
   }));

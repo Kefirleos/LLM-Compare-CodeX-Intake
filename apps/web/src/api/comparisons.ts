@@ -1,4 +1,4 @@
-import { comparisonResponseSchema, publicErrorSchema, decodeNdjson, streamEventSchema } from '@llm-compare/contracts';
+import { comparisonResponseSchema, publicErrorSchema, decodeNdjson, streamEventSchema, utf8Bytes } from '@llm-compare/contracts';
 import type { ComparisonRequest, RetryRequest, StreamEvent, AttemptResult } from '@llm-compare/contracts';
 
 export async function sendComparison(
@@ -6,7 +6,7 @@ export async function sendComparison(
   signal: AbortSignal,
   onEvent?: (event: StreamEvent) => void,
 ) {
-  const transportSignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+  const transportSignal = AbortSignal.any([signal, AbortSignal.timeout(140_000)]);
   const response = await fetch('targets' in input ? '/api/comparisons' : '/api/retries', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(onEvent ? { Accept: 'application/x-ndjson' } : {}) },
@@ -18,6 +18,7 @@ export async function sendComparison(
     const results = new Map<string, AttemptResult>();
     const started = new Set<string>();
     const texts = new Map<string, string>();
+    const sizes = new Map<string, number>();
     let seq = 0;
     let runStarted = false;
     let completed = false;
@@ -46,7 +47,9 @@ export async function sendComparison(
             if (!started.has(identity.columnId)) throw new Error('Отсутствует начало попытки.');
             if (event.type === 'answer_delta') {
               const text = (texts.get(event.columnId) ?? '') + event.text;
-              if (new TextEncoder().encode(text).byteLength > 512 * 1024) throw new Error('Ответ слишком велик.');
+              const size = (sizes.get(event.columnId) ?? 0) + utf8Bytes(event.text);
+              if (size > 512 * 1024) throw new Error('Ответ слишком велик.');
+              sizes.set(event.columnId, size);
               texts.set(event.columnId, text);
             } else {
               if (event.result.text !== (texts.get(identity.columnId) ?? '')) throw new Error('Текст результата не соответствует потоку.');

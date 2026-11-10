@@ -31,6 +31,12 @@ it('rejects truncated JSON and invalid UTF-8', async () => {
   await expect(collect(bytes('{"text":'))).rejects.toThrow();
   await expect(collect(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([0xff])); c.close(); } }))).rejects.toThrow();
 });
+it('rejects a stream that grows past the line limit without a newline', async () => {
+  const consume = async () => {
+    for await (const _ of decodeNdjson(bytes('x'.repeat(4 * 1024 * 1024 + 1), 64 * 1024), new AbortController().signal)) { /* consume */ }
+  };
+  await expect(consume()).rejects.toThrow('Строка потока слишком велика');
+});
 it('cancels a blocked reader immediately on abort', async () => {
   const cancel = vi.fn();
   const controller = new AbortController();
@@ -79,6 +85,47 @@ it('streams independent terminals, retaining partial text on timeout', async () 
   expect(results.map((result) => result.status)).toEqual(['succeeded', 'timed_out']);
   expect(results[1]!.text).toBe('mock-detailed');
   expect(events.at(-1)!.type).toBe('run_completed');
+});
+
+it('aborts active streaming attempts when the server closes', async () => {
+  const adapter = new FakeAdapter();
+  const signals: AbortSignal[] = [];
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => { ready = resolve; });
+  adapter.stream = async function* (_input, signal) {
+    signals.push(signal);
+    if (signals.length === 2) ready();
+    yield 'часть';
+    await delay(60_000, undefined, { signal });
+  };
+  const app = buildApp(adapter);
+  apps.push(app);
+  const pending = app.inject({ method: 'POST', url: '/api/comparisons', headers: { accept: 'application/x-ndjson' }, payload: input() }).then((response) => response);
+  await started;
+  await app.close();
+  const response = await pending;
+  expect(signals).toHaveLength(2);
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  expect(response.body).not.toContain('run_completed');
+});
+
+it('aborts non-streaming requests even when the adapter ignores shutdown', async () => {
+  const adapter = new FakeAdapter();
+  const signals: AbortSignal[] = [];
+  let ready!: () => void;
+  const started = new Promise<void>((resolve) => { ready = resolve; });
+  vi.spyOn(adapter, 'generate').mockImplementation(async (_input, signal) => {
+    signals.push(signal);
+    if (signals.length === 2) ready();
+    return new Promise(() => {});
+  });
+  const app = buildApp(adapter);
+  apps.push(app);
+  const pending = app.inject({ method: 'POST', url: '/api/comparisons', payload: input() }).then((response) => response);
+  await started;
+  await app.close();
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  expect((await pending).json().results.map((result: { status: string }) => result.status)).toEqual(['cancelled', 'cancelled']);
 });
 
 it('waits for downstream drain before advancing producers', async () => {
@@ -135,7 +182,7 @@ function streamFixture(body: ComparisonRequest) {
 }
 
 it.each(['finish', 'truncated', 'text-end', 'error', 'unknown', 'invalid delta'] as const)('normalizes proxy stream: %s', async (scenario) => {
-  const events: unknown[] = [{ type: 'start' }, { type: 'reasoning-delta', delta: 'private reasoning' }, { type: 'text-delta', delta: 'Ответ 👋' }];
+  const events: unknown[] = [{ type: 'start' }, { type: 'reasoning-delta', delta: '' }, { type: 'reasoning-delta', delta: 'private reasoning' }, { type: 'text-delta', delta: 'Ответ 👋' }];
   if (scenario === 'finish') events.push({ type: 'text-end' }, { type: 'finish' });
   if (scenario === 'text-end') events.push({ type: 'text-end' });
   if (scenario === 'error') events.push({ type: 'error', message: 'private provider detail' });
@@ -144,10 +191,12 @@ it.each(['finish', 'truncated', 'text-end', 'error', 'unknown', 'invalid delta']
   const transport = vi.fn<typeof fetch>(async () => new Response(bytes(events.map((event) => JSON.stringify(event)).join('\n')), { headers: { 'content-type': 'application/x-ndjson' } }));
   const adapter = new CodexProxyAdapter('fixture-key', transport);
   const received: string[] = [];
-  const consume = async () => { for await (const delta of adapter.stream({ modelId: 'openai/test', prompt: 'Вопрос' }, new AbortController().signal)) received.push(delta); };
+  const activity = vi.fn();
+  const consume = async () => { for await (const delta of adapter.stream({ modelId: 'openai/test', prompt: 'Вопрос' }, new AbortController().signal, activity)) received.push(delta); };
   if (scenario === 'finish') await consume();
   else await expect(consume()).rejects.toMatchObject({ publicError: { code: scenario === 'error' ? 'GENERATION_FAILED' : 'UPSTREAM_PROTOCOL' } });
   expect(received).toEqual(['Ответ 👋']);
+  expect(activity).toHaveBeenCalledTimes(2);
   expect(transport).toHaveBeenCalledOnce();
   expect(transport.mock.calls[0]![0]).toBe('https://llm.codex.so/stream');
   const options = transport.mock.calls[0]![1]!;
