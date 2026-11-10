@@ -29,7 +29,8 @@
     "typecheck": "npm run build -w @llm-compare/contracts && npm run typecheck --workspaces --if-present && tsc -p tsconfig.tests.json",
     "pretest": "npm run build -w @llm-compare/contracts",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build",
+    "check": "node scripts/check.mjs",
+    "check:verbose": "npm run typecheck && npm test && npm run build",
     "start": "npm run start -w @llm-compare/server"
   }
 }
