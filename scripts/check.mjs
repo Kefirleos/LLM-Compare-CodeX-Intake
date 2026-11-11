@@ -37,7 +37,8 @@ async function run(step, label) {
   const seconds = ((performance.now() - time) / 1000).toFixed(1);
   const output = clean(tail);
   const tests = step === 'test' ? output.match(/Tests\s+([^\r\n]+)/)?.[1].trim() : '';
-  console.log(`${code === 0 ? 'OK' : 'FAIL'} ${label} (${seconds} с)${tests ? `: ${tests}` : ''}`);
+  const browser = step === 'check:browser' ? output.match(/\b(\d+ passed)\b/)?.[1] : '';
+  console.log(`${code === 0 ? 'OK' : 'FAIL'} ${label} (${seconds} с)${tests || browser ? `: ${tests || browser}` : ''}`);
   if (code !== 0) {
     console.error(output.trim().split(/\r?\n/).slice(-30).join('\n'));
     console.error(`Полный журнал: ${logPath}`);
@@ -46,7 +47,7 @@ async function run(step, label) {
 }
 
 try {
-  for (const [step, label] of [['typecheck', 'Типы'], ['test', 'Тесты'], ['build', 'Сборка'], ['check:markdown-worker', 'Markdown worker']]) {
+  for (const [step, label] of [['typecheck', 'Типы'], ['test', 'Тесты'], ['build', 'Сборка'], ['check:markdown-worker', 'Markdown worker'], ['check:browser', 'Браузер']]) {
     const code = await run(step, label);
     if (code !== 0) { process.exitCode = code; break; }
   }

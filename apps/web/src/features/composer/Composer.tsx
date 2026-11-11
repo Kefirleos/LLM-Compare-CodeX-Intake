@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MAX_PROMPT_BYTES, utf8Bytes } from '@llm-compare/contracts';
 import type { FormEvent } from 'react';
 
@@ -16,11 +16,18 @@ export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop, re
   const textarea = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
   const [validation, setValidation] = useState('');
-  useEffect(() => {
-    const element = textarea.current!;
+  const resize = () => {
+    const element = textarea.current;
+    if (!element) return;
     element.style.height = 'auto';
-    element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
-  }, [draft]);
+    const height = Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight);
+    element.style.height = `${Math.max(48, Math.min(element.scrollHeight, 180, height * .2))}px`;
+  };
+  useLayoutEffect(resize, [draft]);
+  useEffect(() => {
+    window.addEventListener('resize', resize); window.visualViewport?.addEventListener('resize', resize);
+    return () => { window.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('resize', resize); };
+  }, []);
 
   function submit(event?: FormEvent) {
     event?.preventDefault();

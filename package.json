@@ -13,6 +13,8 @@
   },
   "packageManager": "npm@11.17.0",
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.0",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.9",
     "@types/node": "24.19.2",
@@ -31,8 +33,9 @@
     "pretest": "npm run build -w @llm-compare/contracts",
     "test": "vitest run",
     "check": "node scripts/check.mjs",
-    "check:verbose": "npm run typecheck && npm test && npm run build && npm run check:markdown-worker",
+    "check:verbose": "npm run typecheck && npm test && npm run build && npm run check:markdown-worker && npm run check:browser",
     "check:markdown-worker": "node scripts/check-markdown-worker.mjs",
+    "check:browser": "playwright test",
     "start": "npm run start -w @llm-compare/server"
   }
 }

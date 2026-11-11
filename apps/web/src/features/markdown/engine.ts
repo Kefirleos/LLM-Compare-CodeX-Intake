@@ -10,7 +10,7 @@ import type { Definition, Root, Nodes } from 'mdast';
 
 const markdownParser = parser.configure(GFM);
 export const parseCanonical = (source: string): Root => fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
-export interface AstBlock { id: string; from: number; to: number; kind: string; ast: Root }
+export interface AstBlock { id: string; from: number; to: number; kind: string; ast: Root; prefixLength: number; trailingWhitespace: boolean }
 export interface ParseStats { syntaxReadChars: number; reusedSyntaxBlocks: number; parsedAstChars: number; parsedAstBlocks: number; reusedAstBlocks: number; totalBlocks: number }
 export interface ParsedDocument { blocks: readonly AstBlock[]; stats: ParseStats }
 interface BlockRecord { block: AstBlock; source: string; baseAst: Root; syntax: Tree; dependencies: Set<string>; definitions: Definition[]; context: string }
@@ -96,7 +96,7 @@ export class MarkdownEngine {
       const baseAst = parseCanonical(raw);
       stats.parsedAstChars += raw.length;
       stats.parsedAstBlocks++;
-      records.push({ block: { id, from, to, kind: first.name, ast: baseAst }, source: raw,
+      records.push({ block: { id, from, to, kind: first.name, ast: baseAst, prefixLength: 0, trailingWhitespace: /\s$/.test(raw) }, source: raw,
         syntax, baseAst, dependencies: new Set(members.flatMap((member) => [...dependenciesIn(member, source)])), definitions: definitionsIn(baseAst), context: '' });
     }
     // Definition precedence is global and first-wins, including definitions in containers.
@@ -120,7 +120,7 @@ export class MarkdownEngine {
         stats.parsedAstChars += context.length + 2 + record.source.length;
         stats.parsedAstBlocks++;
       }
-      const block = { ...record.block, ast };
+      const block = { ...record.block, ast, prefixLength: context ? context.length + 2 : 0 };
       records[index] = { ...record, block, context };
       return block;
     });

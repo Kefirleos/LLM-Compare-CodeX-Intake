@@ -39,10 +39,17 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
   const [confirm, setConfirm] = useState<'remove' | 'clear' | null>(null);
   const [currentId, setCurrentId] = useState('');
   const [saved, setSaved] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(() => !window.matchMedia('(max-width: 600px)').matches);
   const runtime = useRef({ repository: null as ConversationRepository | null, saver: null as ConversationSaver | null,
     meta: { schemaVersion: 1, generation: 0, enabled: true } as StorageMeta, data: null as ConversationData | null, busy: false, blocked: false, key: 0, alive: false, usable: false, forceCapture: false });
   const epoch = useRef(0);
   const actionLock = useRef(false);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 600px)');
+    const update = () => setHistoryExpanded(!media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
 
   const bind = useCallback((id: string, revision: number) => {
     const state = runtime.current;
@@ -209,6 +216,8 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
 
   const fallback = useMemo<ModelCatalog>(() => ({ protocolVersion: 1, catalogVersion: 'unavailable', mode: pane?.initial?.mode ?? 'mock', models: [] }), [pane]);
   return <>
+    <details className="history-panel" open={historyExpanded} onToggle={(event) => setHistoryExpanded(event.currentTarget.open)}>
+    <summary>История бесед</summary>
     <div className="history-toolbar" aria-label="Локальная история">
       <label><input type="checkbox" checked={enabled} disabled={!available || action || runtime.current.blocked} onChange={(event) => { void toggle(event.target.checked); }} /> Сохранять на этом устройстве</label>
       <select aria-label="Сохранённые беседы" value={entries.some((entry) => entry.id === currentId) ? currentId : ''} disabled={!ready || busy || action} onChange={(event) => { if (event.target.value) void open(event.target.value); }}>
@@ -218,6 +227,7 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
       <button disabled={!available || busy || action || (!entries.length && !warning)} onClick={() => setConfirm('clear')}>Очистить историю</button>
       <span role="status">{!ready ? 'Загрузка локальной истории…' : !enabled ? 'Сохранение отключено' : runtime.current.blocked ? 'Сохранение приостановлено' : saved ? 'Сохранено на устройстве' : available ? 'Автосохранение включено' : 'Работа в памяти'}</span>
     </div>
+    </details>
     {warning && <p className="storage-notice" role="status">{warning}</p>}
     {problem && <div className="storage-notice" role="alert"><p>{problem}</p>{available && <div>
       <button disabled={busy || action || !currentId} onClick={() => { void open(currentId, true); }}>Загрузить сохранённую версию</button>

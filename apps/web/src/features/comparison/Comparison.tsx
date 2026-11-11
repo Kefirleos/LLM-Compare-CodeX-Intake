@@ -228,7 +228,8 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
             disabled={busy || catalogRefreshing || workspaceLocked || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>
         </div>)}
         <div className="add-column"><button ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
-        {!turn && <div className="empty-comparison"><p className="eyebrow">СРАВНЕНИЕ МОДЕЛЕЙ</p><h1>Один вопрос.<br /><span>Несколько ответов.</span></h1><p>Выберите 2–4 модели и задайте вопрос ниже.</p></div>}
+        {!turn && <div className="empty-comparison" {...(mobile && selectedId ? { id: `panel-${selectedId}`, role: 'tabpanel', 'aria-labelledby': `tab-${selectedId}` } : {})}><p className="eyebrow">СРАВНЕНИЕ МОДЕЛЕЙ</p><h1>Один вопрос.<br /><span>Несколько ответов.</span></h1><p>Выберите 2–4 модели и задайте вопрос ниже.</p></div>}
+        {!turn && mobile && columns.filter((column) => column.columnId !== selectedId).map((column) => <section key={column.columnId} id={`panel-${column.columnId}`} role="tabpanel" aria-labelledby={`tab-${column.columnId}`} hidden />)}
         {[...pastTurns, ...(turn ? [turn] : [])].map((view) => {
           const visible = Object.fromEntries(columns.flatMap((column) => view.results[column.columnId] ? [[column.columnId, view.results[column.columnId]!]] : []));
           const leaders = timingLeaders(visible, view !== turn || !busy);
@@ -248,7 +249,7 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}
     <div className="run-status" role="status">{busy ? 'Ответы поступают. Генерацию можно остановить.' : turn ? 'Сравнение завершено.' : ''}</div>
     <Composer draft={draft} onChange={setDraft} onSubmit={submit} onStop={stop} busy={busy} disabled={hasUnavailable || catalogBlocked} readOnly={workspaceLocked} />
-    {picker && <ModelPicker models={catalog.models} selectedIds={columns.map((column) => column.model.id)} onClose={closePicker} onSelect={(model) => {
+    {picker && <ModelPicker returnFocus={addButton.current} models={catalog.models} selectedIds={columns.map((column) => column.model.id)} onClose={closePicker} onSelect={(model) => {
       if (lock.current || workspaceLocked || columns.length >= 4 || columns.some((column) => column.model.id === model.id)) return;
       setColumns((current) => [...current, createColumn(model)]); closePicker();
     }} />}
