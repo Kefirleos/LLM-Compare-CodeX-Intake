@@ -46,7 +46,7 @@ async function run(step, label) {
 }
 
 try {
-  for (const [step, label] of [['typecheck', 'Типы'], ['test', 'Тесты'], ['build', 'Сборка']]) {
+  for (const [step, label] of [['typecheck', 'Типы'], ['test', 'Тесты'], ['build', 'Сборка'], ['check:markdown-worker', 'Markdown worker']]) {
     const code = await run(step, label);
     if (code !== 0) { process.exitCode = code; break; }
   }

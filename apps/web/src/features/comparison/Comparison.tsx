@@ -83,7 +83,7 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
     setError('');
     setRecoverPrompt('');
     const targets = 'targets' in input ? input.targets : [input.target];
-    const pending = Object.fromEntries(targets.map((target) => [target.columnId, { status: 'pending' as const }]));
+    const pending = Object.fromEntries(targets.map((target) => [target.columnId, { status: 'pending' as const, attemptId: target.attemptId }]));
     if ('targets' in input) {
       if (turn) setPastTurns((current) => [...current, turn]);
       setTurn({ turnId: input.turnId, prompt: input.prompt, results: pending, targets: structuredClone(input.targets), serializerVersion: 1, attempts: {} });
@@ -117,7 +117,7 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
       setError(message);
       setRecoverPrompt(input.prompt);
       setTurn((current) => epoch === requestEpoch.current && current?.turnId === input.turnId ? {
-        ...current, results: { ...current.results, ...Object.fromEntries(targets.filter((target) => current.results[target.columnId]?.status === 'pending').map((target) => [target.columnId, { status: 'network_error' as const, message, text: current.results[target.columnId]?.text ?? '', reasoning: current.results[target.columnId]?.reasoning ?? '' }])) },
+        ...current, results: { ...current.results, ...Object.fromEntries(targets.filter((target) => current.results[target.columnId]?.status === 'pending').map((target) => [target.columnId, { status: 'network_error' as const, attemptId: target.attemptId, message, text: current.results[target.columnId]?.text ?? '', reasoning: current.results[target.columnId]?.reasoning ?? '' }])) },
       } : current);
       if ('targets' in input) setDraft((current) => current || input.prompt);
     } finally {
@@ -138,7 +138,7 @@ export function Comparison({ catalog: initialCatalog }: { catalog: ModelCatalog 
     lock.current = false;
     setBusy(false);
     setTurn((current) => current ? { ...current, results: Object.fromEntries(Object.entries(current.results).map(([id, result]) =>
-      [id, result.status === 'pending' ? { status: 'stopped', text: result.text ?? '', reasoning: result.reasoning ?? '', message: 'Запрос остановлен. Полученный текст сохранён.' } : result])) } : current);
+      [id, result.status === 'pending' ? { status: 'stopped', ...(result.attemptId ? { attemptId: result.attemptId } : {}), text: result.text ?? '', reasoning: result.reasoning ?? '', message: 'Запрос остановлен. Полученный текст сохранён.' } : result])) } : current);
   }
 
   function submit() {

@@ -9,7 +9,7 @@ export function Answer({ result, retry, disabled, totalLeader, firstAnswerLeader
   return <>
     <Thinking text={result.reasoning ?? ''} active={result.status === 'pending' && Boolean(result.reasoningActive)} interrupted={failed}
       durationMs={'reasoningMs' in result ? result.reasoningMs : undefined} />
-    {result.text && <MarkdownAnswer text={result.text} />}
+    {result.text && <MarkdownAnswer key={result.attemptId ?? 'answer'} documentId={result.attemptId ?? 'answer'} text={result.text} finalized={result.status !== 'pending'} />}
     {result.status === 'succeeded' && !result.text && <p className="muted">Модель вернула пустой ответ.</p>}
     {result.status === 'pending' ? <p className="pending" role="status">Получение ответа…</p> : <>
       {'totalMs' in result && <AttemptMetrics result={result} totalLeader={totalLeader} firstAnswerLeader={firstAnswerLeader} />}

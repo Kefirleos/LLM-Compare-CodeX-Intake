@@ -3,9 +3,47 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MarkdownAnswer, MarkdownBoundary, safeMarkdownUrl } from '../apps/web/src/features/markdown/MarkdownAnswer';
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('Markdown rendering', () => {
+  it('preserves the exact latest raw text when a browser worker cannot start', async () => {
+    vi.stubGlobal('Worker', class { constructor() { throw new Error('Worker denied'); } });
+    const text = '<script>do not execute</script>\n  исходный текст';
+    const view = render(<MarkdownAnswer text={text} finalized={false} />);
+    await screen.findByText('Не удалось обновить форматирование. Исходный ответ сохранён.');
+    expect(document.querySelector('.markdown-fallback pre')?.textContent).toBe(text);
+    view.rerender(<MarkdownAnswer text={text + '\nещё текст'} finalized />);
+    expect(document.querySelector('.markdown-fallback pre')?.textContent).toBe(text + '\nещё текст');
+    expect(document.querySelector('script')).toBeNull();
+  });
+  it('keeps stable DOM, clipboard focus and selection when a later block grows', () => {
+    const first = '# Stable\n\n```js\nconst value = 1;\n```\n\nTail';
+    const view = render(<MarkdownAnswer text={first} finalized={false} />);
+    const heading = screen.getByRole('heading', { name: 'Stable' });
+    const code = document.querySelector('pre code')!;
+    const button = screen.getByRole('button', { name: 'Скопировать код' });
+    button.focus();
+    const range = document.createRange();
+    range.setStart(code.firstChild!, 0); range.setEnd(code.firstChild!, 5);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    view.rerender(<MarkdownAnswer text={first + ' grows\n\n## New'} finalized={false} />);
+    expect(screen.getByRole('heading', { name: 'Stable' })).toBe(heading);
+    expect(document.querySelector('pre code')).toBe(code);
+    expect(document.activeElement).toBe(button);
+    expect(window.getSelection()!.toString()).toBe('const');
+    expect(screen.getByRole('heading', { name: 'New' })).toBeTruthy();
+  });
+
+  it('updates a late reference while preserving an unrelated paragraph', () => {
+    const first = '[link][ref]\n\nIndependent.\n\n';
+    const view = render(<MarkdownAnswer text={first} finalized={false} />);
+    const independent = screen.getByText('Independent.');
+    expect(screen.queryByRole('link')).toBeNull();
+    view.rerender(<MarkdownAnswer text={first + '[ref]: https://example.com'} finalized />);
+    expect(screen.getByRole('link', { name: 'link' }).getAttribute('href')).toBe('https://example.com');
+    expect(screen.getByText('Independent.')).toBe(independent);
+  });
+
   it('renders headings, nested lists, quotes, GFM tables, task lists and inline code', () => {
     render(<MarkdownAnswer text={'# Заголовок\n\nПодзаголовок\n---\n\n**Жирный** и *курсив*, ~~удалено~~, `inline`.\n\n- Первый\n  - Вложенный\n\n1. Один\n2. Два\n\n> Цитата\n\n| Имя | Значение |\n| --- | --- |\n| Режим | Демо |\n\n- [x] Готово\n'} />);
     expect(screen.getByRole('heading', { name: 'Заголовок', level: 1 })).toBeTruthy();
