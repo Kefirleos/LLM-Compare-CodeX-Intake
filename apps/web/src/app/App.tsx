@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ModelCatalog } from '@llm-compare/contracts';
 import { fetchCatalog } from '../api/catalog';
-import { Comparison } from '../features/comparison/Comparison';
+import { ConversationWorkspace } from '../features/storage/ConversationWorkspace';
 
 type CatalogState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; catalog: ModelCatalog };
 
@@ -27,7 +27,7 @@ export function App() {
         <section aria-label="Сравнение языковых моделей" aria-busy={state.status === 'loading'}>
           {state.status === 'loading' && <p className="notice" role="status">Загрузка каталога…</p>}
           {state.status === 'error' && <div className="notice" role="alert"><p>{state.message}</p><button onClick={() => setRevision((value) => value + 1)}>Повторить</button></div>}
-          {state.status === 'ready' && <Comparison catalog={state.catalog} />}
+          <ConversationWorkspace catalog={state.status === 'ready' ? state.catalog : null} />
         </section>
       </main>
       <footer>LLM Compare</footer>

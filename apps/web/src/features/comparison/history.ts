@@ -1,7 +1,7 @@
-import type { AttemptResult, ComparisonTarget, HistoryPair } from '@llm-compare/contracts';
+import type { ComparisonTarget, HistoryPair } from '@llm-compare/contracts';
+import type { StoredDisplayResult } from '../storage/schema';
 
-export type DisplayResult = AttemptResult | { status: 'pending'; attemptId?: string; text?: string; reasoning?: string; reasoningActive?: boolean }
-  | { status: 'network_error' | 'stopped'; attemptId?: string; message: string; text?: string; reasoning?: string };
+export type DisplayResult = StoredDisplayResult;
 export type Turn = {
   turnId: string; prompt: string; results: Record<string, DisplayResult>;
   targets: ComparisonTarget[]; serializerVersion: 1;

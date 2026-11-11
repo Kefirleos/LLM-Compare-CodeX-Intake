@@ -21,6 +21,14 @@ h2 { font-size: 14px; font-weight: 550; margin: 0; overflow-wrap: anywhere; }
 .workspace-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 16px 28px 8px; gap: 12px; }
 .workspace-toolbar button { font-size: 12px; }
 .toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.history-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 28px; border-bottom: 1px solid #30323b; font-size: 11px; }
+.history-toolbar label { display: inline-flex; align-items: center; gap: 6px; }
+.history-toolbar select { min-width: 0; max-width: 100%; flex: 1 1 200px; background: #202127; color: #fff; border: 1px solid #444650; border-radius: 8px; padding: 8px; }
+.history-toolbar button { font-size: 11px; }
+.history-toolbar [role="status"] { color: #a5a8b2; }
+.storage-notice { margin: 8px 28px; padding: 10px 14px; border: 1px solid #655674; border-radius: 8px; color: #d0c9df; font-size: 12px; line-height: 1.5; }
+.storage-notice p { margin: 0 0 8px; }
+.storage-notice button { margin: 4px 8px 0 0; font-size: 11px; }
 .demo-note { margin: 6px 28px 20px; font-size: 12px; color: #a5a8b2; line-height: 1.5; }
 .comparison-scroll { flex: 1; min-height: 100px; overflow: auto; border-top: 1px solid #30323b; }
 .comparison-grid { display: grid; grid-template-columns: repeat(var(--columns), minmax(0, 1fr)) 64px; min-height: 100%; align-content: start; }

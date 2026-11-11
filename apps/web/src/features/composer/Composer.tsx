@@ -9,9 +9,10 @@ interface Props {
   onChange: (value: string) => void;
   onSubmit: () => void;
   onStop?: () => void;
+  readOnly?: boolean;
 }
 
-export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop }: Props) {
+export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop, readOnly = false }: Props) {
   const textarea = useRef<HTMLTextAreaElement>(null);
   const composing = useRef(false);
   const [validation, setValidation] = useState('');
@@ -33,7 +34,7 @@ export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop }: 
   return <form className="composer" onSubmit={submit}>
     <label htmlFor="prompt" className="field-label">Ваш вопрос</label>
     <div className="composer-input">
-      <textarea ref={textarea} id="prompt" placeholder="Задайте вопрос всем выбранным моделям…" rows={2} value={draft}
+      <textarea ref={textarea} id="prompt" placeholder="Задайте вопрос всем выбранным моделям…" rows={2} value={draft} readOnly={readOnly}
         aria-describedby="composer-help composer-error" aria-invalid={Boolean(validation)}
         onChange={(event) => { setValidation(''); onChange(event.target.value); }}
         onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
