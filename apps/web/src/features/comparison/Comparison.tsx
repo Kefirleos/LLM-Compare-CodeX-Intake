@@ -201,7 +201,7 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
     {catalog.models.length < 2 && <p className="notice" role="alert">Для сравнения нужны хотя бы две доступные модели.</p>}
     {hasUnavailable && catalog.models.length >= 2 && <p className="notice" role="alert">Выбранная модель больше недоступна. Начните новое сравнение, чтобы выбрать доступные модели. Прежние ответы сохранены до сброса.</p>}
     {catalogError && <p className="run-error" role="alert">{catalogError}</p>}
-    <div className="comparison-scroll">
+    <div className="comparison-viewport"><div className="comparison-scroll">
       {mobile && <div className="mobile-tabs" role="tablist" aria-label="Модели" onKeyDown={(event) => {
         const index = columns.findIndex((column) => column.columnId === selectedId);
         let next = index;
@@ -245,7 +245,7 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
         </Fragment>;
         })}
       </div>
-    </div>
+    </div></div>
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}
     <div className="run-status" role="status">{busy ? 'Ответы поступают. Генерацию можно остановить.' : turn ? 'Сравнение завершено.' : ''}</div>
     <Composer draft={draft} onChange={setDraft} onSubmit={submit} onStop={stop} busy={busy} disabled={hasUnavailable || catalogBlocked} readOnly={workspaceLocked} />
