@@ -97,13 +97,19 @@ test('Stop flushes the accepted tail and a hidden mobile model keeps receiving d
 
 test('reload restores a partial checkpoint without resubmitting, then cross-tab conflicts stay local', async ({ page, context }) => {
   let posts = 0; context.on('request', (request) => { if (request.url().endsWith('/api/comparisons')) posts++; });
+  const saved = page.getByText('Сохранено на устройстве', { exact: true });
   await ready(page); await compare(page, '[fixture:stream]');
-  await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible(); await page.waitForTimeout(600);
+  await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible(); await expect(saved).toBeVisible();
   await page.reload(); await expect(page.getByText(/Страница была закрыта до завершения ответа/).first()).toBeVisible();
   expect(posts).toBe(1); await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('partial');
+  // The recovered attempt writes a new revision. Finish it before opening another tab.
+  await expect(saved).toBeVisible();
   const second = await context.newPage(); await ready(second); await expect(second.getByText(/Страница была закрыта/).first()).toBeVisible();
+  const conflict = second.getByText(/Беседа изменена или удалена в другой вкладке/);
+  await expect(conflict).toBeHidden();
   await page.getByLabel('Ваш вопрос').fill('updated in first tab');
-  await expect(second.getByText(/Беседа изменена или удалена в другой вкладке/)).toBeVisible();
+  await expect(saved).toBeVisible();
+  await expect(conflict).toBeVisible();
   await second.reload(); await expect(second.getByLabel('Ваш вопрос')).toHaveValue('updated in first tab'); expect(posts).toBe(1);
 });
 
