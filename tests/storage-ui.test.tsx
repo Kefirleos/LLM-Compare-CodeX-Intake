@@ -110,6 +110,7 @@ it('removes one saved conversation after confirmation without restoring it on re
   expect((await inspector.list()).entries).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: 'Подтвердить удаление' }));
   await waitFor(async () => expect((await inspector.list()).entries).toHaveLength(0));
+  await waitFor(() => expect(screen.queryByRole('option', { name: 'Демо · Question' })).toBeNull());
   view.unmount(); await mount();
   expect(screen.queryByText('Answer a')).toBeNull(); expect((await inspector.load(original.conversationId)).record).toBeNull();
 });

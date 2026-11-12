@@ -197,8 +197,10 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
       } else {
         await state.saver?.flush();
         if (state.blocked || !state.data || !state.saver) throw new StorageError('CONFLICT');
-        await state.repository.remove(state.data.conversationId, state.saver.revision, state.meta.generation);
-        setEntries((current) => current.filter((entry) => entry.id !== state.data?.conversationId)); install();
+        const conversationId = state.data.conversationId;
+        await state.repository.remove(conversationId, state.saver.revision, state.meta.generation);
+        setEntries((current) => current.filter((entry) => entry.id !== conversationId));
+        install();
       }
       setConfirm(null);
     } catch (cause) { setProblem(storageMessage(cause)); }
