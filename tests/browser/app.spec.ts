@@ -22,6 +22,9 @@ async function accessible(page: Page) {
 for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768], [1440, 900]] as const) {
   test(`four columns, sticky headers, overflow and accessibility at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height }); await ready(page); await accessible(page);
+    const viewport = await page.locator('.comparison-scroll').boundingBox();
+    expect(viewport!.height).toBeGreaterThanOrEqual(height * .75);
+    await expect(page.locator('.history-panel')).toHaveJSProperty('open', false);
     await add(page, 'Медленный ответ'); await add(page, 'Ошибка');
     await expect(page.getByRole('button', { name: 'Добавить модель', exact: true })).toBeDisabled();
     await compare(page, '[fixture:long]'); await completed(page);
@@ -30,7 +33,8 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768],
     await page.locator('.comparison-scroll').evaluate((element) => { element.scrollTop = 800; });
     const scrollBox = await page.locator('.comparison-scroll').boundingBox();
     const heading = await page.locator('.column-heading.is-selected').boundingBox();
-    expect(Math.abs(heading!.y - scrollBox!.y - (width <= 1000 ? 86 : 0))).toBeLessThan(3);
+    const tabsBox = width <= 1000 ? await page.getByRole('tablist').boundingBox() : null;
+    expect(Math.abs(heading!.y - scrollBox!.y - (tabsBox?.height ?? 0))).toBeLessThan(3);
     if (width <= 1000) {
       const tabs = page.getByRole('tab'); await tabs.first().focus(); await tabs.first().press('End');
       await expect(tabs.last()).toHaveAttribute('aria-selected', 'true'); await expect(tabs.last()).toBeFocused();
@@ -97,18 +101,18 @@ test('Stop flushes the accepted tail and a hidden mobile model keeps receiving d
 
 test('reload restores a partial checkpoint without resubmitting, then cross-tab conflicts stay local', async ({ page, context }) => {
   let posts = 0; context.on('request', (request) => { if (request.url().endsWith('/api/comparisons')) posts++; });
-  const saved = page.getByText('Сохранено на устройстве', { exact: true });
+  const historyStatus = page.locator('.history-toolbar').getByRole('status', { includeHidden: true });
   await ready(page); await compare(page, '[fixture:stream]');
-  await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible(); await expect(saved).toBeVisible();
+  await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible(); await expect(historyStatus).toHaveText('Сохранено на устройстве');
   await page.reload(); await expect(page.getByText(/Страница была закрыта до завершения ответа/).first()).toBeVisible();
   expect(posts).toBe(1); await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('partial');
   // The recovered attempt writes a new revision. Finish it before opening another tab.
-  await expect(saved).toBeVisible();
+  await expect(historyStatus).toHaveText('Сохранено на устройстве');
   const second = await context.newPage(); await ready(second); await expect(second.getByText(/Страница была закрыта/).first()).toBeVisible();
   const conflict = second.getByText(/Беседа изменена или удалена в другой вкладке/);
   await expect(conflict).toBeHidden();
   await page.getByLabel('Ваш вопрос').fill('updated in first tab');
-  await expect(saved).toBeVisible();
+  await expect(historyStatus).toHaveText('Сохранено на устройстве');
   await expect(conflict).toBeVisible();
   await second.reload(); await expect(second.getByLabel('Ваш вопрос')).toHaveValue('updated in first tab'); expect(posts).toBe(1);
 });

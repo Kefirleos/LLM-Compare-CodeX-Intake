@@ -35,7 +35,9 @@ function response(input: ComparisonRequest | RetryRequest): ComparisonResponse {
 }
 async function mount() {
   const view = render(<StrictMode><ConversationWorkspace catalog={catalog} repositoryFactory={repositoryFactory} /></StrictMode>);
-  await screen.findByLabelText('Ваш вопрос'); return view;
+  await screen.findByLabelText('Ваш вопрос');
+  await userEvent.click(screen.getByText('История бесед', { exact: true }));
+  return view;
 }
 async function savedData(): Promise<ConversationData | undefined> {
   const list = await inspector.list(); const id = list.entries[0]?.id;

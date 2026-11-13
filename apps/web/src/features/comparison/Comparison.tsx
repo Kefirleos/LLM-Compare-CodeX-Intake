@@ -197,7 +197,6 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
       <button disabled={busy || catalogRefreshing || workspaceLocked} onClick={() => { void refreshCatalog(); }}>{catalogRefreshing ? 'Обновление…' : 'Обновить модели'}</button>
       <button onClick={reset} disabled={busy || catalogRefreshing || workspaceLocked || (!turn && !hasUnavailable)}>Новое сравнение</button>
     </div></div>
-    <p className="demo-note">{catalog.mode === 'mock' ? 'Тестовые ответы без обращения к языковым моделям.' : 'Ответы языковых моделей через серверный API.'} Каждая модель продолжает диалог только со своими завершёнными ответами.</p>
     {catalog.models.length < 2 && <p className="notice" role="alert">Для сравнения нужны хотя бы две доступные модели.</p>}
     {hasUnavailable && catalog.models.length >= 2 && <p className="notice" role="alert">Выбранная модель больше недоступна. Начните новое сравнение, чтобы выбрать доступные модели. Прежние ответы сохранены до сброса.</p>}
     {catalogError && <p className="run-error" role="alert">{catalogError}</p>}
@@ -228,7 +227,7 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
             disabled={busy || catalogRefreshing || workspaceLocked || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>
         </div>)}
         <div className="add-column"><button ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
-        {!turn && <div className="empty-comparison" {...(mobile && selectedId ? { id: `panel-${selectedId}`, role: 'tabpanel', 'aria-labelledby': `tab-${selectedId}` } : {})}><p className="eyebrow">СРАВНЕНИЕ МОДЕЛЕЙ</p><h1>Один вопрос.<br /><span>Несколько ответов.</span></h1><p>Выберите 2–4 модели и задайте вопрос ниже.</p></div>}
+        {!turn && <div className="empty-comparison" {...(mobile && selectedId ? { id: `panel-${selectedId}`, role: 'tabpanel', 'aria-labelledby': `tab-${selectedId}` } : {})}>Выберите 2–4 модели и задайте вопрос ниже.</div>}
         {!turn && mobile && columns.filter((column) => column.columnId !== selectedId).map((column) => <section key={column.columnId} id={`panel-${column.columnId}`} role="tabpanel" aria-labelledby={`tab-${column.columnId}`} hidden />)}
         {[...pastTurns, ...(turn ? [turn] : [])].map((view) => {
           const visible = Object.fromEntries(columns.flatMap((column) => view.results[column.columnId] ? [[column.columnId, view.results[column.columnId]!]] : []));

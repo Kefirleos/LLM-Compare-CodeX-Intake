@@ -30,7 +30,6 @@ export function App() {
           <ConversationWorkspace catalog={state.status === 'ready' ? state.catalog : null} />
         </section>
       </main>
-      <footer>LLM Compare</footer>
     </div>
   );
 }
