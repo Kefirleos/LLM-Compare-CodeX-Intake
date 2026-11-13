@@ -24,7 +24,10 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768],
     await page.setViewportSize({ width, height }); await ready(page); await accessible(page);
     const viewport = await page.locator('.comparison-scroll').boundingBox();
     expect(viewport!.height).toBeGreaterThanOrEqual(height * .75);
-    await expect(page.locator('.history-panel')).toHaveJSProperty('open', false);
+    const history = page.getByRole('button', { name: 'История', exact: true });
+    await expect(history).toHaveAttribute('aria-expanded', 'false');
+    const composer = await page.locator('.composer-input').boundingBox();
+    expect(height - (composer!.y + composer!.height)).toBeGreaterThanOrEqual(width <= 640 ? 13 : 24);
     await add(page, 'Медленный ответ'); await add(page, 'Ошибка');
     await expect(page.getByRole('button', { name: 'Добавить модель', exact: true })).toBeDisabled();
     await compare(page, '[fixture:long]'); await completed(page);
@@ -41,6 +44,22 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768],
       await tabs.last().press('Home'); await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
     }
     await accessible(page); await page.screenshot({ path: info.outputPath(`layout-${width}.png`) });
+    await history.click();
+    const popover = page.getByRole('region', { name: 'История бесед' });
+    await expect(popover.getByRole('button', { name: '[fixture:long]' })).toBeVisible();
+    const before = await page.locator('.comparison-scroll').boundingBox();
+    expect(before).toEqual(scrollBox);
+    const popoverBox = await popover.boundingBox();
+    expect(popoverBox!.x).toBeGreaterThanOrEqual(0);
+    expect(popoverBox!.x + popoverBox!.width).toBeLessThanOrEqual(width);
+    await accessible(page);
+    await page.screenshot({ path: info.outputPath(`history-${width}.png`) });
+    await page.keyboard.press('Escape');
+    await expect(popover).toBeHidden();
+    await expect(history).toBeFocused();
+    await history.click();
+    await page.getByLabel('Ваш вопрос').click();
+    await expect(popover).toBeHidden();
   });
 }
 

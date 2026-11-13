@@ -21,7 +21,7 @@ export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop, re
     if (!element) return;
     element.style.height = 'auto';
     const height = Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight);
-    element.style.height = `${Math.max(36, Math.min(element.scrollHeight, 144, height * .2))}px`;
+    element.style.height = `${Math.max(42, Math.min(element.scrollHeight + 2, 144, height * .2))}px`;
   };
   useLayoutEffect(resize, [draft]);
   useEffect(() => {

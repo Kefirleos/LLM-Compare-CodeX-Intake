@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { comparisonRequestSchema, retryRequestSchema } from '@llm-compare/contracts';
 import type { ComparisonRequest, ModelCatalog, ModelDescriptor, RetryRequest } from '@llm-compare/contracts';
 import { sendComparison } from '../../api/comparisons';
@@ -10,6 +10,7 @@ import { buildHistory, skippedTurns } from './history';
 import type { DisplayResult, Turn } from './history';
 import { timingLeaders } from './metrics';
 import { fetchCatalog } from '../../api/catalog';
+import { WorkspaceHeader } from '../../app/WorkspaceHeader';
 import type { ConversationData } from '../storage/schema';
 
 type Column = { columnId: string; model: ModelDescriptor };
@@ -20,7 +21,10 @@ const statusText = (result?: DisplayResult) => {
   return { pending: 'Получение ответа…', succeeded: 'Готово', failed: 'Ошибка', timed_out: 'Таймаут', cancelled: 'Прервано', interrupted: 'Прервано', network_error: 'Соединение прервано', stopped: 'Остановлено' }[result.status];
 };
 
-export function Comparison({ catalog: initialCatalog, initialConversation, onSnapshot, beforeReset, workspaceLocked = false }: { catalog: ModelCatalog; initialConversation?: ConversationData; onSnapshot?: (data: ConversationData, busy: boolean) => void; beforeReset?: () => Promise<boolean>; workspaceLocked?: boolean }) {
+export function Comparison({ catalog: initialCatalog, initialConversation, onSnapshot, beforeReset, workspaceLocked = false, history, notices }: {
+  catalog: ModelCatalog; initialConversation?: ConversationData; onSnapshot?: (data: ConversationData, busy: boolean) => void;
+  beforeReset?: () => Promise<boolean>; workspaceLocked?: boolean; history?: ReactNode; notices?: ReactNode;
+}) {
   const [catalog, setCatalog] = useState(initialCatalog);
   const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [catalogError, setCatalogError] = useState('');
@@ -193,10 +197,11 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
   }
 
   return <>
-    <div className="workspace-toolbar"><span className="badge">{catalog.mode === 'mock' ? 'Демо-режим' : 'Live'}</span><div className="toolbar-actions">
+    <WorkspaceHeader history={history} actions={<div className="toolbar-actions"><span className="badge">{catalog.mode === 'mock' ? 'Демо' : 'Live'}</span>
       <button disabled={busy || catalogRefreshing || workspaceLocked} onClick={() => { void refreshCatalog(); }}>{catalogRefreshing ? 'Обновление…' : 'Обновить модели'}</button>
-      <button onClick={reset} disabled={busy || catalogRefreshing || workspaceLocked || (!turn && !hasUnavailable)}>Новое сравнение</button>
-    </div></div>
+      <button onClick={reset} disabled={busy || catalogRefreshing || workspaceLocked || (!turn && !hasUnavailable)}><span aria-hidden="true">+ </span>Новое сравнение</button>
+    </div>} />
+    {notices}
     {catalog.models.length < 2 && <p className="notice" role="alert">Для сравнения нужны хотя бы две доступные модели.</p>}
     {hasUnavailable && catalog.models.length >= 2 && <p className="notice" role="alert">Выбранная модель больше недоступна. Начните новое сравнение, чтобы выбрать доступные модели. Прежние ответы сохранены до сброса.</p>}
     {catalogError && <p className="run-error" role="alert">{catalogError}</p>}

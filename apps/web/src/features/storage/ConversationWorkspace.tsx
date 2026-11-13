@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { ModelCatalog } from '@llm-compare/contracts';
+import { WorkspaceHeader } from '../../app/WorkspaceHeader';
 import { Comparison } from '../comparison/Comparison';
 import { ConversationRepository, StorageError } from './repository';
 import type { HistoryEntry, HistoryNotice, StorageMeta } from './repository';
@@ -26,7 +28,9 @@ const entryFor = (record: SavedConversation): HistoryEntry => ({ id: record.conv
 const activeKey = 'llm-compare-active-conversation';
 function rememberActive(id?: string) { try { if (id) sessionStorage.setItem(activeKey, id); else sessionStorage.removeItem(activeKey); } catch { /* IndexedDB remains usable if sessionStorage is blocked. */ } }
 
-export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepository }: { catalog: ModelCatalog | null; repositoryFactory?: () => ConversationRepository }) {
+export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactory = defaultRepository }: {
+  catalog: ModelCatalog | null; catalogNotice?: ReactNode; repositoryFactory?: () => ConversationRepository;
+}) {
   const [ready, setReady] = useState(false);
   const [available, setAvailable] = useState(false);
   const [enabled, setEnabled] = useState(true);
@@ -39,10 +43,37 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
   const [confirm, setConfirm] = useState<'remove' | 'clear' | null>(null);
   const [currentId, setCurrentId] = useState('');
   const [saved, setSaved] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyPanel = useRef<HTMLDivElement>(null);
+  const historyTrigger = useRef<HTMLButtonElement>(null);
   const runtime = useRef({ repository: null as ConversationRepository | null, saver: null as ConversationSaver | null,
     meta: { schemaVersion: 1, generation: 0, enabled: true } as StorageMeta, data: null as ConversationData | null, busy: false, blocked: false, key: 0, alive: false, usable: false, forceCapture: false });
   const epoch = useRef(0);
   const actionLock = useRef(false);
+
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    setConfirm(null);
+  }, []);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !historyPanel.current?.contains(event.target)) closeHistory();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      closeHistory();
+      historyTrigger.current?.focus();
+    };
+    document.addEventListener('pointerdown', dismiss);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', dismiss);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [historyOpen, closeHistory]);
 
   const bind = useCallback((id: string, revision: number) => {
     const state = runtime.current;
@@ -147,6 +178,8 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
       state.meta = loaded.meta; setEnabled(loaded.meta.enabled);
       const restored = recoverConversation(loaded.record.data);
       install(restored, loaded.record.revision, restored !== loaded.record.data);
+      closeHistory();
+      if (!explicit) requestAnimationFrame(() => historyTrigger.current?.focus());
     } catch (cause) { setProblem(storageMessage(cause)); }
     finally { actionLock.current = false; setAction(false); }
   }
@@ -210,27 +243,42 @@ export function ConversationWorkspace({ catalog, repositoryFactory = defaultRepo
   }, []);
 
   const fallback = useMemo<ModelCatalog>(() => ({ protocolVersion: 1, catalogVersion: 'unavailable', mode: pane?.initial?.mode ?? 'mock', models: [] }), [pane]);
-  return <>
-    <details className="history-panel">
-    <summary>История бесед</summary>
-    <div className="history-toolbar" aria-label="Локальная история">
-      <label><input type="checkbox" checked={enabled} disabled={!available || action || runtime.current.blocked} onChange={(event) => { void toggle(event.target.checked); }} /> Сохранять на этом устройстве</label>
-      <select aria-label="Сохранённые беседы" value={entries.some((entry) => entry.id === currentId) ? currentId : ''} disabled={!ready || busy || action} onChange={(event) => { if (event.target.value) void open(event.target.value); }}>
-        <option value="">Текущая беседа</option>{entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.mode === 'mock' ? 'Демо' : 'Live'} · {entry.title}</option>)}
-      </select>
-      <button disabled={!available || busy || action || !entries.some((entry) => entry.id === currentId)} onClick={() => setConfirm('remove')}>Удалить беседу</button>
-      <button disabled={!available || busy || action || (!entries.length && !warning)} onClick={() => setConfirm('clear')}>Очистить историю</button>
+  const history = <div className="history-panel" ref={historyPanel}>
+    <button className="history-trigger" ref={historyTrigger} aria-expanded={historyOpen} aria-controls="conversation-history"
+      onClick={() => { if (historyOpen) closeHistory(); else setHistoryOpen(true); }}>
+      <span className="history-clock" aria-hidden="true" />История<span className="history-chevron" aria-hidden="true" />
+    </button>
+    <section id="conversation-history" className="history-toolbar" aria-labelledby="history-title" hidden={!historyOpen}>
+      <h2 id="history-title">История бесед</h2>
+      {entries.length ? <ul className="history-list" aria-label="Сохранённые беседы">
+        {entries.map((entry) => <li key={entry.id}><button aria-current={entry.id === currentId ? 'true' : undefined}
+          disabled={!ready || busy || action || entry.id === currentId}
+          onClick={() => { void open(entry.id); }}>
+          <span>{entry.title}</span>{entry.id === currentId && <span aria-hidden="true">✓</span>}
+        </button></li>)}
+      </ul> : <p className="history-empty">Сохранённых бесед пока нет.</p>}
+      <label className="history-preference">Сохранять на этом устройстве<input type="checkbox" checked={enabled}
+        disabled={!available || action || runtime.current.blocked} onChange={(event) => { void toggle(event.target.checked); }} /></label>
       <span role="status">{!ready ? 'Загрузка локальной истории…' : !enabled ? 'Сохранение отключено' : runtime.current.blocked ? 'Сохранение приостановлено' : saved ? 'Сохранено на устройстве' : available ? 'Автосохранение включено' : 'Работа в памяти'}</span>
-    </div>
-    </details>
+      {confirm ? <div className="history-confirm">
+        <p>{confirm === 'clear' ? 'Удалить всю локальную историю?' : 'Удалить текущую сохранённую беседу?'}</p>
+        <button className="history-danger" disabled={busy || action} onClick={() => { void removeConfirmed(); }}>Подтвердить удаление</button>
+        <button disabled={action} onClick={() => setConfirm(null)}>Отмена</button>
+      </div> : <div className="history-actions">
+        <button className="history-danger" disabled={!available || busy || action || !entries.some((entry) => entry.id === currentId)} onClick={() => setConfirm('remove')}>Удалить беседу</button>
+        <button className="history-danger" disabled={!available || busy || action || (!entries.length && !warning)} onClick={() => setConfirm('clear')}>Очистить историю</button>
+      </div>}
+    </section>
+  </div>;
+  const notices = <>
+    {catalogNotice}
     {warning && <p className="storage-notice" role="status">{warning}</p>}
     {problem && <div className="storage-notice" role="alert"><p>{problem}</p>{available && <div>
       <button disabled={busy || action || !currentId} onClick={() => { void open(currentId, true); }}>Загрузить сохранённую версию</button>
       <button disabled={busy || action} onClick={() => { void copy(); }}>Сохранить как новую беседу</button>
     </div>}</div>}
-    {confirm && <div className="storage-notice" role="alert"><p>{confirm === 'clear' ? 'Удалить всю локальную историю?' : 'Удалить текущую сохранённую беседу?'}</p>
-      <button disabled={busy || action} onClick={() => { void removeConfirmed(); }}>Подтвердить удаление</button><button disabled={action} onClick={() => setConfirm(null)}>Отмена</button>
-    </div>}
-    {ready && pane && (catalog || pane.initial) && <Comparison key={pane.key} catalog={catalog ?? fallback} {...(pane.initial ? { initialConversation: pane.initial } : {})} onSnapshot={snapshot} beforeReset={prepareNew} workspaceLocked={action} />}
   </>;
+  if (!ready || !pane || (!catalog && !pane.initial)) return <><WorkspaceHeader history={history} />{notices}</>;
+  return <Comparison key={pane.key} catalog={catalog ?? fallback} {...(pane.initial ? { initialConversation: pane.initial } : {})}
+    onSnapshot={snapshot} beforeReset={prepareNew} workspaceLocked={action} history={history} notices={notices} />;
 }

@@ -36,7 +36,7 @@ function response(input: ComparisonRequest | RetryRequest): ComparisonResponse {
 async function mount() {
   const view = render(<StrictMode><ConversationWorkspace catalog={catalog} repositoryFactory={repositoryFactory} /></StrictMode>);
   await screen.findByLabelText('Ваш вопрос');
-  await userEvent.click(screen.getByText('История бесед', { exact: true }));
+  await userEvent.click(screen.getByRole('button', { name: /^История$/ }));
   return view;
 }
 async function savedData(): Promise<ConversationData | undefined> {
@@ -72,7 +72,8 @@ it('restores partial response and Thinking as interrupted and permits only an ex
     update!({ v: 1, runId: input.runId, turnId: input.turnId, seq: 1, type: 'answer_delta', columnId: target.columnId, modelId: target.modelId, attemptId: target.attemptId, text: 'Partial answer' });
     update!({ v: 1, runId: input.runId, turnId: input.turnId, seq: 2, type: 'reasoning_delta', columnId: target.columnId, modelId: target.modelId, attemptId: target.attemptId, text: 'Partial thinking' });
   });
-  expect((screen.getByLabelText('Сохранённые беседы') as HTMLSelectElement).disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: /^История$/ }));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Original question' }) as HTMLButtonElement).disabled).toBe(true));
   await waitFor(async () => expect((await savedData())?.turns[0]?.results[target.columnId]?.text).toBe('Partial answer'), { timeout: 2000 });
   view.unmount(); await mount();
   await screen.findByText('Partial answer'); expect(screen.getByRole('button', { name: /Thinking · прервано/ })).toBeTruthy();
@@ -100,6 +101,7 @@ it('blocks stale autosave, keeps the local draft and offers an explicit copy', a
 it('clears history explicitly and prevents old tabs from restoring it later', async () => {
   await mount(); const user = await finishedConversation(); const before = (await savedData())!;
   const old = await inspector.load(before.conversationId);
+  await user.click(screen.getByRole('button', { name: /^История$/ }));
   await user.click(screen.getByRole('button', { name: 'Очистить историю' })); await user.click(screen.getByRole('button', { name: 'Подтвердить удаление' }));
   await waitFor(async () => expect((await inspector.list()).entries).toHaveLength(0));
   expect(screen.queryByText('Answer a')).toBeNull();
@@ -108,11 +110,12 @@ it('clears history explicitly and prevents old tabs from restoring it later', as
 
 it('removes one saved conversation after confirmation without restoring it on reload', async () => {
   const view = await mount(); const user = await finishedConversation(); const original = (await savedData())!;
+  await user.click(screen.getByRole('button', { name: /^История$/ }));
   await user.click(screen.getByRole('button', { name: 'Удалить беседу' }));
   expect((await inspector.list()).entries).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: 'Подтвердить удаление' }));
   await waitFor(async () => expect((await inspector.list()).entries).toHaveLength(0));
-  await waitFor(() => expect(screen.queryByRole('option', { name: 'Демо · Question' })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('button', { name: /^Question$/ })).toBeNull());
   view.unmount(); await mount();
   expect(screen.queryByText('Answer a')).toBeNull(); expect((await inspector.load(original.conversationId)).record).toBeNull();
 });
@@ -122,11 +125,12 @@ it('restores this tab’s selected conversation rather than a newer write in ano
   await inspector.saveSnapshot({ ...selected, conversationId: crypto.randomUUID(), draft: 'another conversation' }, 0, 0);
   view.unmount(); await mount();
   expect((screen.getByLabelText('Ваш вопрос') as HTMLTextAreaElement).value).not.toBe('another conversation');
-  expect((screen.getByLabelText('Сохранённые беседы') as HTMLSelectElement).value).toBe(selected.conversationId);
+  expect(screen.getByRole('button', { name: 'Question', current: true })).toBeTruthy();
 });
 
 it('persists saving-off and leaves previous conversations intact', async () => {
   const view = await mount(); const user = await finishedConversation(); const original = (await savedData())!;
+  await user.click(screen.getByRole('button', { name: /^История$/ }));
   await user.click(screen.getByRole('checkbox', { name: 'Сохранять на этом устройстве' })); await screen.findByText('Сохранение отключено');
   fireEvent.change(screen.getByLabelText('Ваш вопрос'), { target: { value: 'not saved' } });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 550)); });
@@ -142,7 +146,8 @@ it('flushes the previous conversation before starting a new one and opens it fro
   await waitFor(() => expect(screen.queryByText('Answer a')).toBeNull());
   expect((await inspector.load(original.conversationId)).record?.data.draft).toBe('latest draft');
   await waitFor(async () => expect((await inspector.list()).entries).toHaveLength(2), { timeout: 2000 });
-  await user.selectOptions(screen.getByLabelText('Сохранённые беседы'), original.conversationId);
+  await user.click(screen.getByRole('button', { name: /^История$/ }));
+  await user.click(screen.getByRole('button', { name: /^Question$/ }));
   await screen.findByText('Answer a'); expect((screen.getByLabelText('Ваш вопрос') as HTMLTextAreaElement).value).toBe('latest draft');
   expect(send).toHaveBeenCalledTimes(1);
 });
