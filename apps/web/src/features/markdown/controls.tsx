@@ -2,6 +2,7 @@ import { Children, Component, isValidElement, useEffect, useState } from 'react'
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 
 export function safeMarkdownUrl(url: string, key = 'href'): string | undefined {
+  // oxlint-disable-next-line no-control-regex -- Reject ASCII control characters before parsing the URL.
   if (key !== 'href' || !url || url !== url.trim() || /[\u0000-\u0020\u007f\\]/.test(url) || url.startsWith('//')) return;
   try {
     const parsed = new URL(url, 'https://markdown.invalid/');

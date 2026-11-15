@@ -53,6 +53,7 @@ it('counts reasoning as activity without adding it to the answer', async () => {
 });
 
 it('enforces total time even with continuous activity', async () => {
+  // oxlint-disable-next-line require-yield -- This fixture signals activity without emitting output.
   const { events, done } = run(async function* (_input, signal, activity) {
     while (!signal.aborted) { await wait(10_000); activity?.(); }
   });

@@ -11,6 +11,7 @@ if (!npmCli) {
 const logPath = fileURLToPath(new URL('../check.log', import.meta.url));
 const log = openSync(logPath, 'w');
 const started = performance.now();
+// oxlint-disable-next-line no-control-regex -- Strip ANSI escape sequences from command output.
 const clean = (text) => text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
 
 async function run(step, label) {
@@ -47,7 +48,7 @@ async function run(step, label) {
 }
 
 try {
-  for (const [step, label] of [['typecheck', 'Типы'], ['test', 'Тесты'], ['build', 'Сборка'], ['check:markdown-worker', 'Markdown worker'], ['check:browser', 'Браузер']]) {
+  for (const [step, label] of [['lint', 'Линтер'], ['typecheck', 'Типы'], ['test', 'Тесты'], ['build', 'Сборка'], ['check:markdown-worker', 'Markdown worker'], ['check:browser', 'Браузер']]) {
     const code = await run(step, label);
     if (code !== 0) { process.exitCode = code; break; }
   }
