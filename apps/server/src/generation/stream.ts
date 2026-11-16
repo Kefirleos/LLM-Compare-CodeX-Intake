@@ -35,10 +35,16 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
     let result: AttemptResult;
     try {
       const operation = async (attemptSignal: AbortSignal, clock?: ActivityClock) => {
-        const publish = async (event: OutgoingEvent) => {
+        const publish = async (event: OutgoingEvent, onEnqueued?: () => void) => {
           attemptSignal.throwIfAborted();
           clock?.pause();
-          try { await emit(event); } finally { clock?.resume(); }
+          try {
+            const writing = emit(event);
+            // Admission can reject synchronously. Once enqueued, terminal text must include the
+            // frame even if the attempt times out before the socket drains.
+            onEnqueued?.();
+            await writing;
+          } finally { clock?.resume(); }
         };
         await publish({ type: 'model_started', ...identity });
         started = performance.now();
@@ -49,10 +55,9 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
           clock?.activity();
           if (reasoningStartedAt !== null) { closeReasoning(); await publish({ type: 'reasoning_ended', ...identity }); }
           attemptSignal.throwIfAborted();
-          size += utf8Bytes(delta);
-          if (size > 512 * 1024) throw new AdapterError({ code: 'OUTPUT_LIMIT', message: 'Ответ превышает допустимый размер.', retryable: false });
-          text += delta;
-          await publish({ type: 'answer_delta', ...identity, text: delta });
+          const nextSize = size + utf8Bytes(delta);
+          if (nextSize > 512 * 1024) throw new AdapterError({ code: 'OUTPUT_LIMIT', message: 'Ответ превышает допустимый размер.', retryable: false });
+          await publish({ type: 'answer_delta', ...identity, text: delta }, () => { size = nextSize; text += delta; });
         };
         const prepared = { modelId: target.modelId, prompt, ...(target.history.length ? { history: target.history } : {}) };
         if (adapter.stream) {
@@ -69,10 +74,9 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
             attemptSignal.throwIfAborted();
             if (chunk.type === 'reasoning_delta') {
               clock?.activity();
-              size += utf8Bytes(chunk.text);
-              if (size > 512 * 1024) throw new AdapterError({ code: 'OUTPUT_LIMIT', message: 'Ответ и Thinking превышают допустимый размер.', retryable: false });
-              reasoning += chunk.text;
-              await publish({ type: 'reasoning_delta', ...identity, text: chunk.text });
+              const nextSize = size + utf8Bytes(chunk.text);
+              if (nextSize > 512 * 1024) throw new AdapterError({ code: 'OUTPUT_LIMIT', message: 'Ответ и Thinking превышают допустимый размер.', retryable: false });
+              await publish({ type: 'reasoning_delta', ...identity, text: chunk.text }, () => { size = nextSize; reasoning += chunk.text; });
             }
           }
         } else {

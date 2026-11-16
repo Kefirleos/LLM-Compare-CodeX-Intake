@@ -3,6 +3,7 @@ import { toHast } from 'mdast-util-to-hast';
 import type { Nodes } from 'hast';
 import { MarkdownEngine, parseCanonical } from '../apps/web/src/features/markdown/engine';
 import type { AstBlock } from '../apps/web/src/features/markdown/engine';
+import { FootnotePlanner } from '../apps/web/src/features/markdown/footnotes';
 
 function semantic(node: Nodes, parent = 'root'): unknown {
   if (node.type === 'text') return /^\s*$/.test(node.value) && ['root', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'blockquote'].includes(parent) ? null : node.value;
@@ -87,4 +88,22 @@ it('invalidates only affected reference blocks and keeps first definition preced
   const duplicate = engine.update(source + '[REF]: /first\n\n[ref]: /ignored');
   expect(duplicate.blocks[0]).toBe(after.blocks[0]);
   expect(assembled(duplicate.blocks)).toEqual(semantic(toHast(parseCanonical(source + '[REF]: /first\n\n[ref]: /ignored'))));
+});
+
+it('resolves late footnotes across blocks and preserves unrelated AST objects', () => {
+  const engine = new MarkdownEngine();
+  const planner = new FootnotePlanner('test-');
+  const text = 'First[^a*b*].\n\nIndependent.\n\n`[^a*b*]`\n\n';
+  const before = engine.update(text);
+  expect(planner.update(before.blocks).footer).toBeUndefined();
+  const withNote = text + '[^a*b*]: First paragraph.\n\n    Second paragraph.\n\nA finished paragraph.\n\n';
+  const after = engine.update(withNote);
+  const plan = planner.update(after.blocks);
+  expect(plan.calls.get(after.blocks[0]!)?.size).toBe(1);
+  expect(semantic(plan.footer!)).toEqual(expect.arrayContaining(['section']));
+  expect(JSON.stringify(plan.footer)).toContain('Second paragraph.');
+  expect(after.blocks[1]).toBe(before.blocks[1]);
+  expect(after.blocks[2]).toBe(before.blocks[2]);
+  const appended = engine.update(withNote + 'Unrelated new block.');
+  expect(planner.update(appended.blocks)).toBe(plan);
 });

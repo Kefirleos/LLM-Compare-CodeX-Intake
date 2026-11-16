@@ -67,6 +67,13 @@ try {
       samples.push({ worker: index, version: ++version, chars: text.length, roundTripMs, ...reply.stats });
       lookup = new Map(blocks.map((block) => [block.id, block]));
     }
+    const replacement = { documentId: `restored-${index}`, epoch: 0, baseVersion: 0, version: 1, text: '# Another answer\n\nIndependent.' };
+    const restarted = await nextMessage(worker, replacement);
+    assert.equal(restarted.error, undefined);
+    assert.equal(restarted.documentId, replacement.documentId);
+    assert.deepEqual(restarted.changed.map((block) => block.id), restarted.order);
+    assert.deepEqual(restarted.changed.flatMap((block) => semantic(toHast(block.ast))),
+      semantic(toHast(fromMarkdown(replacement.text, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }))));
   }));
   assert(ticks > 0, 'Main event loop must keep running while worker threads parse.');
   await writeFile(new URL('../markdown-performance.log', import.meta.url), JSON.stringify({ runtime: process.version, ticks, maxHarnessTickDelayMs: maxTickDelayMs, canonicalChecksOnMainThread: true, samples }, null, 2) + '\n');

@@ -152,13 +152,41 @@ export const streamEventSchema = z.discriminatedUnion('type', [
 ]);
 export type StreamEvent = z.infer<typeof streamEventSchema>;
 
+export const MAX_NDJSON_LINE_BYTES = 4 * 1024 * 1024;
+export const MAX_NDJSON_STREAM_BYTES = 32 * 1024 * 1024;
+
 // Shared bounded UTF-8 line decoder. A complete final JSON line without LF is accepted.
 export async function* decodeNdjson(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncGenerator<unknown> {
   const reader = body.getReader();
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  let buffer = '';
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  let buffer = new Uint8Array();
+  let bufferedLength = 0;
+  let firstLine = true;
   let bytes = 0;
   let complete = false;
+
+  const startsWithBom = (data: Uint8Array) => data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf;
+  // A geometrically grown buffer copies only fragments of a line, without re-encoding earlier bytes.
+  const append = (part: Uint8Array) => {
+    const length = bufferedLength + part.length;
+    const limitWithBom = MAX_NDJSON_LINE_BYTES + (firstLine ? 3 : 0);
+    if (length > limitWithBom) throw new Error('Строка потока слишком велика.');
+    if (length > buffer.length) {
+      const expanded = new Uint8Array(Math.min(limitWithBom, Math.max(length, buffer.length * 2)));
+      expanded.set(buffer.subarray(0, bufferedLength));
+      buffer = expanded;
+    }
+    buffer.set(part, bufferedLength);
+    bufferedLength = length;
+    if (length > MAX_NDJSON_LINE_BYTES && !startsWithBom(buffer)) throw new Error('Строка потока слишком велика.');
+  };
+  const parseLine = (line: Uint8Array): unknown => {
+    if (firstLine && startsWithBom(line)) line = line.subarray(3);
+    firstLine = false;
+    if (line.length > MAX_NDJSON_LINE_BYTES) throw new Error('Строка потока слишком велика.');
+    const text = decoder.decode(line);
+    return text.trim() ? JSON.parse(text) as unknown : undefined;
+  };
   const abort = () => { void reader.cancel().catch(() => {}); };
   signal.addEventListener('abort', abort, { once: true });
   try {
@@ -166,25 +194,31 @@ export async function* decodeNdjson(body: ReadableStream<Uint8Array>, signal: Ab
       signal.throwIfAborted();
       const chunk = await reader.read();
       signal.throwIfAborted();
-      if (chunk.done) break;
+      if (chunk.done) { complete = true; break; }
       bytes += chunk.value.byteLength;
-      if (bytes > 32 * 1024 * 1024) throw new Error('Поток превышает допустимый размер.');
-      buffer += decoder.decode(chunk.value, { stream: true });
-      let end: number;
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        if (utf8Bytes(line) > 4 * 1024 * 1024) throw new Error('Строка потока слишком велика.');
-        if (line.trim()) yield JSON.parse(line) as unknown;
+      if (bytes > MAX_NDJSON_STREAM_BYTES) throw new Error('Поток превышает допустимый размер.');
+      const data = chunk.value;
+      let start = 0;
+      while (start < data.length) {
+        signal.throwIfAborted();
+        const end = data.indexOf(0x0a, start);
+        if (end < 0) { append(data.subarray(start)); break; }
+        const part = data.subarray(start, end);
+        if (bufferedLength) append(part);
+        const value = parseLine(bufferedLength ? buffer.subarray(0, bufferedLength) : part);
+        bufferedLength = 0;
+        start = end + 1;
+        if (value !== undefined) yield value;
       }
-      if (utf8Bytes(buffer) > 4 * 1024 * 1024) throw new Error('Строка потока слишком велика.');
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) yield JSON.parse(buffer) as unknown;
-    complete = true;
+    if (bufferedLength) {
+      const value = parseLine(buffer.subarray(0, bufferedLength));
+      if (value !== undefined) yield value;
+    }
   } finally {
     signal.removeEventListener('abort', abort);
-    if (!complete) await reader.cancel().catch(() => {});
+    // An underlying stream can keep its cancel promise pending after the reader is closed.
+    if (!complete) abort();
     reader.releaseLock();
   }
 }

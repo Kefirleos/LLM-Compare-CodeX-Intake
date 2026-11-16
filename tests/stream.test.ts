@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
-import { decodeNdjson, streamEventSchema } from '@llm-compare/contracts';
+import { MAX_NDJSON_STREAM_BYTES, decodeNdjson, streamEventSchema } from '@llm-compare/contracts';
 import type { ComparisonRequest, StreamEvent } from '@llm-compare/contracts';
 import { buildApp } from '../apps/server/src/app.js';
 import { FakeAdapter } from '../apps/server/src/adapters/fake.js';
@@ -23,13 +23,14 @@ function bytes(text: string, step = 1) {
 }
 it('decodes split UTF-8, CRLF, blank lines and a final record without LF', async () => {
   const values = [];
-  for await (const value of decodeNdjson(bytes('\r\n{"text":"Привет 👋\\n"}\r\n{"n":2}'), new AbortController().signal)) values.push(value);
+  for await (const value of decodeNdjson(bytes('\ufeff\r\n{"text":"Привет 👋\\n"}\r\n{"n":2}'), new AbortController().signal)) values.push(value);
   expect(values).toEqual([{ text: 'Привет 👋\n' }, { n: 2 }]);
 });
 it('rejects truncated JSON and invalid UTF-8', async () => {
   const collect = async (body: ReadableStream<Uint8Array>) => { for await (const _ of decodeNdjson(body, new AbortController().signal)) { /* consume */ } };
   await expect(collect(bytes('{"text":'))).rejects.toThrow();
   await expect(collect(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([0xff])); c.close(); } }))).rejects.toThrow();
+  await expect(collect(bytes('{}\n\ufeff{}'))).rejects.toThrow();
 });
 it('rejects a stream that grows past the line limit without a newline', async () => {
   const consume = async () => {
@@ -37,6 +38,39 @@ it('rejects a stream that grows past the line limit without a newline', async ()
   };
   await expect(consume()).rejects.toThrow('Строка потока слишком велика');
 });
+it('decodes a fragmented line at the byte limit and counts only the leading BOM outside that limit', async () => {
+  const lineLimit = 4 * 1024 * 1024;
+  const value = 'я'.repeat(lineLimit / 2 - 1);
+  const signal = new AbortController().signal;
+  const reader = decodeNdjson(bytes('\ufeff"' + value + '"\nnull', 1024), signal);
+  expect(await reader.next()).toEqual({ value, done: false });
+  expect(await reader.next()).toEqual({ value: null, done: false });
+  expect((await reader.next()).done).toBe(true);
+  const pastLimit = decodeNdjson(bytes('"' + value + 'x"\n', lineLimit + 2), signal);
+  await expect(pastLimit.next()).rejects.toThrow('Строка потока слишком велика');
+});
+
+it('stops before delivering another buffered record after cancellation', async () => {
+  const controller = new AbortController();
+  const reader = decodeNdjson(bytes('1\n2\n', 16), controller.signal);
+  expect(await reader.next()).toEqual({ value: 1, done: false });
+  controller.abort();
+  await expect(reader.next()).rejects.toMatchObject({ name: 'AbortError' });
+});
+
+it('releases the reader at an explicit terminal even while underlying cancellation is pending', async () => {
+  const cancel = vi.fn(() => new Promise<void>(() => {}));
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new TextEncoder().encode('1\n')); },
+    cancel,
+  });
+  const reader = decodeNdjson(body, new AbortController().signal);
+  expect(await reader.next()).toEqual({ value: 1, done: false });
+  expect((await reader.return(undefined)).done).toBe(true);
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(body.locked).toBe(false);
+});
+
 it('cancels a blocked reader immediately on abort', async () => {
   const cancel = vi.fn();
   const controller = new AbortController();
@@ -155,16 +189,68 @@ it('waits for downstream drain before advancing producers', async () => {
 it('closes a stalled downstream and releases reserved capacity', async () => {
   const adapter = new FakeAdapter();
   const stream = vi.spyOn(adapter, 'stream');
+  vi.spyOn(adapter, 'generate').mockResolvedValue({ text: 'готово' });
   const app = buildApp(adapter);
   apps.push(app);
+  const forcedClose = vi.fn();
   app.addHook('onRequest', async (request, reply) => {
-    if (request.headers.accept === 'application/x-ndjson') reply.raw.write = (() => false) as typeof reply.raw.write;
+    if (request.headers.accept !== 'application/x-ndjson') return;
+    reply.raw.write = (() => false) as typeof reply.raw.write;
+    reply.raw.once('close', () => forcedClose(reply.raw.destroyed, reply.raw.writableEnded));
   });
-  const result = await app.inject({ method: 'POST', url: '/api/comparisons', headers: { accept: 'application/x-ndjson' }, payload: input() });
-  expect(result.statusCode).toBe(200);
+  const address = await app.listen({ host: '127.0.0.1', port: 0 });
+  const responses = await Promise.all([0, 1].map(() => {
+    const payload = input();
+    for (const modelId of ['mock-slow', 'mock-error']) payload.targets.push({ modelId, columnId: randomUUID(), attemptId: randomUUID(), history: [] });
+    return fetch(`${address}/api/comparisons`, {
+      method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(8000),
+    });
+  }));
+  expect(responses.map((response) => response.status)).toEqual([200, 200]);
+  expect((await app.inject({ method: 'POST', url: '/api/comparisons', payload: input() })).statusCode).toBe(429);
+  await Promise.all(responses.map((response) => expect(response.text()).rejects.toMatchObject({ name: 'TypeError' })));
+  await vi.waitFor(() => expect(forcedClose.mock.calls).toEqual([[true, false], [true, false]]));
   expect(stream).not.toHaveBeenCalled();
   expect((await app.inject({ method: 'POST', url: '/api/comparisons', payload: input() })).statusCode).toBe(200);
 }, 10_000);
+
+it('keeps the received tail and other models when one stream exhausts its frame budget', async () => {
+  const adapter = new FakeAdapter();
+  const fragmentedLength = 128 * 1024;
+  // Escapes make the terminal much larger than the underlying UTF-8 text.
+  const escaped = '\0'.repeat(512 * 1024);
+  adapter.stream = async function* ({ modelId }) {
+    if (modelId === 'mock-clear') {
+      for (let index = 0; index < fragmentedLength; index++) yield 'x';
+    } else if (modelId === 'mock-detailed') {
+      yield escaped;
+    } else {
+      yield { type: 'reasoning_delta', text: 'план' };
+      yield 'готово';
+    }
+  };
+  const payload = input();
+  for (const modelId of ['mock-slow', 'mock-error']) payload.targets.push({ modelId, columnId: randomUUID(), attemptId: randomUUID(), history: [] });
+  const app = buildApp(adapter);
+  apps.push(app);
+  const wire = await app.inject({ method: 'POST', url: '/api/comparisons', headers: { accept: 'application/x-ndjson' }, payload });
+  expect(Buffer.byteLength(wire.body)).toBeLessThanOrEqual(MAX_NDJSON_STREAM_BYTES);
+
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(wire.body, { headers: { 'content-type': 'application/x-ndjson' } })));
+  let lastType: StreamEvent['type'] | undefined;
+  const response = await sendComparison(payload, new AbortController().signal, (event) => { lastType = event.type; });
+  expect(lastType).toBe('run_completed');
+  const limited = response.results.find((result) => result.modelId === 'mock-clear')!;
+  expect(limited).toMatchObject({ status: 'failed', error: { code: 'OUTPUT_LIMIT', retryable: false } });
+  expect(limited.text.length).toBeGreaterThan(0);
+  expect(limited.text.length).toBeLessThan(fragmentedLength);
+  expect(limited.text).toBe('x'.repeat(limited.text.length));
+  expect(response.results.find((result) => result.modelId === 'mock-detailed')).toMatchObject({ status: 'succeeded', text: escaped });
+  for (const modelId of ['mock-slow', 'mock-error']) {
+    expect(response.results.find((result) => result.modelId === modelId)).toMatchObject({ status: 'succeeded', reasoning: 'план', text: 'готово' });
+  }
+}, 15_000);
 
 function streamFixture(body: ComparisonRequest) {
   let seq = 0;

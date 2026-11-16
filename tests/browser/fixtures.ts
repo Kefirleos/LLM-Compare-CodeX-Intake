@@ -1,3 +1,3 @@
 export const firstChunk = '# Stable heading\n\n```js\nconst value = 1;\n```\n\n' + Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ') + ' partial';
-export const secondChunk = 'ly completed.\n\n[Late link][ref]\n\n| Column | Value |\n| --- | --- |\n| width | ' + 'x'.repeat(300) + ' |\n\n[ref]: https://example.com/docs\n\n![blocked](https://tracking.invalid/image)\n\n<script>window.__markdownExecuted = true</script>\n\nBrowser fixture complete.';
+export const secondChunk = 'ly completed.\n\n[Late link][ref] and a note[^detail].\n\n| Column | Value |\n| --- | --- |\n| width | ' + 'x'.repeat(300) + ' |\n\n[ref]: https://example.com/docs\n\n![blocked](https://tracking.invalid/image)\n\n<script>window.__markdownExecuted = true</script>\n\n[^detail]: Browser footnote content.\n\nBrowser fixture complete.';
 export const longAnswer = Array.from({ length: 60 }, (_, i) => `## Section ${i}\n\n` + 'Long content 👋 for scrolling and columns. '.repeat(8)).join('\n\n');

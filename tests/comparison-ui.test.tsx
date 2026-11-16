@@ -165,13 +165,13 @@ describe('comparison interface', () => {
     const common = { v: 1 as const, runId: body.runId, turnId: body.turnId };
     const first = response.results[0]!;
     const second = response.results[1]!;
+    await user.type(textarea, 'Следующий вопрос');
+    const stop = screen.getByRole('button', { name: 'Остановить' });
     act(() => {
       update!({ ...common, seq: 1, type: 'model_result', result: first });
       update!({ ...common, seq: 2, type: 'answer_delta', columnId: second.columnId, attemptId: second.attemptId, modelId: second.modelId, text: 'Частичный ответ' });
+      stop.click();
     });
-    expect(screen.getByText('Частичный ответ')).toBeTruthy();
-    await user.type(textarea, 'Следующий вопрос');
-    await user.click(screen.getByRole('button', { name: 'Остановить' }));
     expect(signal.aborted).toBe(true);
     expect(screen.getByText('Ответ mock-clear')).toBeTruthy();
     expect(screen.getByText('Частичный ответ')).toBeTruthy();

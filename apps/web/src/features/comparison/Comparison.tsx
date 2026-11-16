@@ -41,7 +41,6 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
   const [recoverPrompt, setRecoverPrompt] = useState('');
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 1000px)').matches);
   const lock = useRef(false);
-  const requestEpoch = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const catalogController = useRef<AbortController | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
@@ -88,7 +87,6 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
   async function execute(input: ComparisonRequest | RetryRequest) {
     if (lock.current || catalogController.current || catalogError || workspaceLocked || conversationMode !== catalog.mode || ('targets' in input && hasUnavailable)) return;
     lock.current = true;
-    const epoch = ++requestEpoch.current;
     setBusy(true);
     setError('');
     setRecoverPrompt('');
@@ -103,30 +101,36 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
     } } : current);
     const transport = new AbortController();
     controller.current = transport;
+    const acceptsUpdates = () => controller.current === transport && !transport.signal.aborted;
     try {
       const response = await sendComparison(input, transport.signal, (event) => {
-        if (transport.signal.aborted || controller.current !== transport) return;
+        if (!acceptsUpdates()) return;
         setTurn((current) => {
-          if (epoch !== requestEpoch.current || current?.turnId !== input.turnId) return current;
-          if (event.type === 'model_result') return { ...current, results: { ...current.results, [event.result.columnId]: event.result } };
+          // Stop can run before React applies this update. Keep events already accepted from the transport.
+          if (current?.turnId !== input.turnId) return current;
+          if (event.type === 'model_result') {
+            const previous = current.results[event.result.columnId];
+            if (previous?.status !== 'pending' || previous.attemptId !== event.result.attemptId) return current;
+            return { ...current, results: { ...current.results, [event.result.columnId]: event.result } };
+          }
           if (event.type !== 'answer_delta' && event.type !== 'reasoning_delta' && event.type !== 'reasoning_started' && event.type !== 'reasoning_ended') return current;
           const previous = current.results[event.columnId];
-          if (previous?.status !== 'pending') return current;
+          if (previous?.status !== 'pending' || previous.attemptId !== event.attemptId) return current;
           const updated = event.type === 'answer_delta' ? { ...previous, text: (previous.text ?? '') + event.text, reasoningActive: false }
             : event.type === 'reasoning_delta' ? { ...previous, reasoning: (previous.reasoning ?? '') + event.text, reasoningActive: true }
               : { ...previous, reasoningActive: event.type === 'reasoning_started' };
           return { ...current, results: { ...current.results, [event.columnId]: updated } };
         });
       });
-      if (transport.signal.aborted) return;
+      if (!acceptsUpdates()) return;
       const results = Object.fromEntries(response.results.map((result) => [result.columnId, result]));
-      setTurn((current) => epoch === requestEpoch.current && current?.turnId === input.turnId ? { ...current, results: { ...current.results, ...results } } : current);
+      setTurn((current) => current?.turnId === input.turnId ? { ...current, results: { ...current.results, ...results } } : current);
     } catch (cause) {
-      if (transport.signal.aborted) return;
+      if (!acceptsUpdates()) return;
       const message = cause instanceof Error && cause.name === 'Error' ? cause.message : 'Не удалось получить ответы. Запрос мог быть принят сервером. Автоматический повтор отключён.';
       setError(message);
       setRecoverPrompt(input.prompt);
-      setTurn((current) => epoch === requestEpoch.current && current?.turnId === input.turnId ? {
+      setTurn((current) => current?.turnId === input.turnId ? {
         ...current, results: { ...current.results, ...Object.fromEntries(targets.filter((target) => current.results[target.columnId]?.status === 'pending').map((target) => [target.columnId, { status: 'network_error' as const, attemptId: target.attemptId, message, text: current.results[target.columnId]?.text ?? '', reasoning: current.results[target.columnId]?.reasoning ?? '' }])) },
       } : current);
       if ('targets' in input) setDraft((current) => current || input.prompt);
@@ -142,7 +146,6 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
   function stop() {
     const transport = controller.current;
     if (!transport) return;
-    requestEpoch.current++;
     transport.abort();
     controller.current = null;
     lock.current = false;

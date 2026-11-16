@@ -44,6 +44,51 @@ describe('Markdown rendering', () => {
     expect(screen.getByText('Independent.')).toBe(independent);
   });
 
+  it('numbers repeated calls across blocks and isolates note navigation to each answer', () => {
+    const text = 'First[^a].\n\nRepeat[^a]. Then[^a-2].\n\n[^a-2]: Other note.\n\n[^a]: Original [source][link] and [^nested].\n\n[^a]: Duplicate.\n\n[^nested]: Nested note.\n\n[link]: https://example.com';
+    const { container } = render(<><MarkdownAnswer text={text} /><MarkdownAnswer text={text} /></>);
+    const answers = Array.from(container.querySelectorAll('.markdown'));
+    expect(answers).toHaveLength(2);
+    const ids = new Set<string>();
+    for (const answer of answers) {
+      expect(answer.querySelectorAll('section[data-footnotes]')).toHaveLength(1);
+      const calls = [...answer.querySelectorAll<HTMLAnchorElement>('a[data-footnote-ref]')];
+      expect(calls.map((link) => link.textContent)).toEqual(['1', '1', '2', '3']);
+      const notes = [...answer.querySelectorAll('.footnotes > ol > li')];
+      expect(notes.map((note) => note.textContent)).toEqual([expect.stringContaining('Original source'), expect.stringContaining('Other note.'), expect.stringContaining('Nested note.')]);
+      expect(answer.textContent).not.toContain('Duplicate.');
+      for (const element of answer.querySelectorAll('[id]')) {
+        expect(ids.has(element.id)).toBe(false);
+        ids.add(element.id);
+      }
+      for (const link of answer.querySelectorAll<HTMLAnchorElement>('a[data-footnote-ref], a[data-footnote-backref]')) {
+        expect(link.target).toBe('');
+        expect(answer.contains(document.getElementById(link.hash.slice(1)))).toBe(true);
+      }
+      for (const link of calls) {
+        expect(answer.contains(document.getElementById(link.getAttribute('aria-describedby')!))).toBe(true);
+      }
+      expect(answer.querySelector<HTMLAnchorElement>('a[href="https://example.com"]')?.target).toBe('_blank');
+    }
+  });
+
+  it('resolves streamed definitions without replacing unrelated rendered text', () => {
+    const first = 'Text[^late].\n\nIndependent.';
+    const view = render(<MarkdownAnswer text={first} finalized={false} />);
+    const stable = screen.getByText('Independent.');
+    expect(screen.queryByRole('link')).toBeNull();
+    view.rerender(<MarkdownAnswer text={first + '\n\n[^late]: A note.\n\n'} />);
+    expect(screen.getByRole('link', { name: '1' })).toBeTruthy();
+    expect(screen.getByText(/A note\./)).toBeTruthy();
+    expect(screen.getByText('Independent.')).toBe(stable);
+  });
+
+  it('resolves a reference-style link in an indented note continuation', () => {
+    const text = '[^early]: A note.\n\n    More about [the source][link].\n\nLater call[^early].\n\n[link]: https://example.com';
+    render(<MarkdownAnswer text={text} />);
+    expect(screen.getByRole('link', { name: 'the source' }).getAttribute('href')).toBe('https://example.com');
+  });
+
   it('renders headings, nested lists, quotes, GFM tables, task lists and inline code', () => {
     render(<MarkdownAnswer text={'# Заголовок\n\nПодзаголовок\n---\n\n**Жирный** и *курсив*, ~~удалено~~, `inline`.\n\n- Первый\n  - Вложенный\n\n1. Один\n2. Два\n\n> Цитата\n\n| Имя | Значение |\n| --- | --- |\n| Режим | Демо |\n\n- [x] Готово\n'} />);
     expect(screen.getByRole('heading', { name: 'Заголовок', level: 1 })).toBeTruthy();

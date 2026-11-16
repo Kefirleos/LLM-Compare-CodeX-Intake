@@ -6,23 +6,59 @@ import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizeIdentifier } from 'micromark-util-normalize-identifier';
-import type { Definition, Root, Nodes } from 'mdast';
+import type { Definition, FootnoteDefinition, Root, Nodes } from 'mdast';
 
 const markdownParser = parser.configure(GFM);
 export const parseCanonical = (source: string): Root => fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
 export interface AstBlock { id: string; from: number; to: number; kind: string; ast: Root; prefixLength: number; trailingWhitespace: boolean }
 export interface ParseStats { syntaxReadChars: number; reusedSyntaxBlocks: number; parsedAstChars: number; parsedAstBlocks: number; reusedAstBlocks: number; totalBlocks: number }
 export interface ParsedDocument { blocks: readonly AstBlock[]; stats: ParseStats }
-interface BlockRecord { block: AstBlock; source: string; baseAst: Root; syntax: Tree; dependencies: Set<string>; definitions: Definition[]; context: string }
+interface BlockRecord {
+  block: AstBlock; source: string; baseAst: Root; syntax: Tree; dependencies: Set<string>;
+  definitions: Definition[]; notes: FootnoteDefinition[]; noteDependencies: Set<string>; context: string;
+}
 
-function definitionsIn(root: Root): Definition[] {
-  const found: Definition[] = [];
+function definitionsIn(root: Root) {
+  const definitions: Definition[] = [];
+  const notes: FootnoteDefinition[] = [];
   const visit = (node: Nodes) => {
-    if (node.type === 'definition') found.push(node);
+    if (node.type === 'definition') definitions.push(node);
+    if (node.type === 'footnoteDefinition') notes.push(node);
     if ('children' in node) node.children.forEach(visit);
   };
   visit(root);
-  return found;
+  return { definitions, notes };
+}
+
+// The syntax tree treats a GFM footnote as an ordinary bracket construct.
+// Scan only candidate labels. The canonical parser decides whether they are calls.
+const noteLabel = /\[\^((?:\\[\\[\]]|\\(?![\\[\]])|[^\\[\]\t\r\n ]){1,999})\]/gu;
+const linkLabel = /\[((?:\\[\\[\]]|\\(?![\\[\]])|[^\\[\]]){1,999})\]/gu;
+function noteDependenciesIn(root: Root, raw: string): Set<string> {
+  const labels = new Set<string>();
+  if (!raw.includes('[^')) return labels;
+  const opaque: { from: number; to: number }[] = [];
+  const visit = (node: Nodes) => {
+    if (node.type === 'code' || node.type === 'inlineCode' || node.type === 'html') {
+      const from = node.position?.start.offset;
+      const to = node.position?.end.offset;
+      if (from !== undefined && to !== undefined) opaque.push({ from, to });
+      return;
+    }
+    if ('children' in node) node.children.forEach(visit);
+  };
+  visit(root);
+  let index = 0;
+  for (const match of raw.matchAll(noteLabel)) {
+    while (opaque[index] && opaque[index]!.to <= match.index) index++;
+    if (!opaque[index] || opaque[index]!.from > match.index) labels.add(normalizeIdentifier(match[1]!));
+  }
+  return labels;
+}
+
+function mayDefineFootnote(raw: string): boolean {
+  for (const match of raw.matchAll(noteLabel)) if (raw[match.index + match[0].length] === ':') return true;
+  return false;
 }
 
 // Lezer recognizes potential references even before their definitions exist.
@@ -80,7 +116,9 @@ export class MarkdownEngine {
         const gap = source.slice(last.to, blockStart(next.from)).replace(/\r\n?/g, '\n');
         // Canonical parsing carries indented-code context into the next block,
         // including an empty list marker after a blank line.
-        if (/\n[ \t]*\n/.test(gap) && last.name !== 'CodeBlock') break;
+        // Lezer reads a footnote's indented continuation as a separate code block.
+        const continuesFootnote = next.name === 'CodeBlock' && mayDefineFootnote(source.slice(last.from, last.to));
+        if (/\n[ \t]*\n/.test(gap) && last.name !== 'CodeBlock' && !continuesFootnote) break;
         members.push(next); last = next;
       }
       // Indented code starts after its first indentation in Lezer's tree.
@@ -96,8 +134,12 @@ export class MarkdownEngine {
       const baseAst = parseCanonical(raw);
       stats.parsedAstChars += raw.length;
       stats.parsedAstBlocks++;
+      const { definitions, notes } = definitionsIn(baseAst);
+      const dependencies = new Set(members.flatMap((member) => [...dependenciesIn(member, source)]));
+      // The canonical parse can turn what Lezer saw as code into rich footnote content.
+      if (notes.length) for (const match of raw.matchAll(linkLabel)) dependencies.add(normalizeIdentifier(match[1]!));
       records.push({ block: { id, from, to, kind: first.name, ast: baseAst, prefixLength: 0, trailingWhitespace: /\s$/.test(raw) }, source: raw,
-        syntax, baseAst, dependencies: new Set(members.flatMap((member) => [...dependenciesIn(member, source)])), definitions: definitionsIn(baseAst), context: '' });
+        syntax, baseAst, dependencies, definitions, notes, noteDependencies: noteDependenciesIn(baseAst, raw), context: '' });
     }
     // Definition precedence is global and first-wins, including definitions in containers.
     const definitions = new Map<string, string>();
@@ -110,17 +152,25 @@ export class MarkdownEngine {
         definitions.set(label, `[${definition.identifier}]` + serialized.slice('[context]'.length));
       }
     }
+    const noteDeclarations = new Map<string, string>();
+    for (const record of records) for (const note of record.notes) {
+      const label = normalizeIdentifier(note.identifier);
+      if (!noteDeclarations.has(label)) noteDeclarations.set(label, `[^${note.identifier}]:\n`);
+    }
     const blocks = records.map((record, index) => {
-      const context = [...record.dependencies].map((label) => definitions.get(label) ?? '').join('');
+      const context = [...record.dependencies].map((label) => definitions.get(label) ?? '').join('')
+        + [...record.noteDependencies].map((label) => noteDeclarations.get(label) ?? '').join('');
       const old = previous.get(record.block.id);
       if (old?.source === record.source && old.context === context) { stats.reusedAstBlocks++; return old.block; }
       let ast = record.baseAst;
+      const prefixLength = context ? context.length + 2 : 0;
       if (context) {
         ast = parseCanonical(context + '\n\n' + record.source);
-        stats.parsedAstChars += context.length + 2 + record.source.length;
+        ast.children = ast.children.filter((node) => node.type !== 'footnoteDefinition' || (node.position?.start.offset ?? -1) >= prefixLength);
+        stats.parsedAstChars += prefixLength + record.source.length;
         stats.parsedAstBlocks++;
       }
-      const block = { ...record.block, ast, prefixLength: context ? context.length + 2 : 0 };
+      const block = { ...record.block, ast, prefixLength };
       records[index] = { ...record, block, context };
       return block;
     });

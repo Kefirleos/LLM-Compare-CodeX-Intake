@@ -110,6 +110,15 @@ test('real worker reveals words, keeps DOM/focus/selection and blocks external M
   expect(await handle!.evaluate((element) => element === document.querySelector('.answer-cell.is-selected pre code'))).toBe(true);
   await expect(copy).toBeFocused(); expect(await page.evaluate(() => getSelection()!.toString())).toBe('const');
   await expect(page.getByRole('link', { name: 'Late link' }).first()).toHaveAttribute('href', 'https://example.com/docs');
+  const answer = page.locator('.answer-cell.is-selected');
+  const footnote = answer.locator('a[data-footnote-ref]');
+  const destination = (await footnote.getAttribute('href'))!;
+  const referenceId = (await footnote.getAttribute('id'))!;
+  await expect(answer.locator(destination)).toContainText('Browser footnote content.');
+  await footnote.click();
+  await expect(page).toHaveURL((url) => url.hash === destination);
+  await answer.locator('a[data-footnote-backref]').click();
+  await expect(page).toHaveURL((url) => url.hash === '#' + referenceId);
   await expect(page.locator('.markdown img, .markdown script, .markdown iframe')).toHaveCount(0);
   await expect(page.locator('.markdown-fallback')).toHaveCount(0); expect(external).toEqual([]); expect(failures).toEqual([]);
 });
@@ -133,7 +142,7 @@ test('reload restores a partial checkpoint without resubmitting, then cross-tab 
   await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible(); await expect(historyStatus).toHaveText('Сохранено на устройстве');
   await page.reload(); await expect(page.getByText(/Страница была закрыта до завершения ответа/).first()).toBeVisible();
   expect(posts).toBe(1); await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('partial');
-  // The recovered attempt writes a new revision. Finish it before opening another tab.
+  // Loading an interrupted checkpoint leaves its saved revision intact.
   await expect(historyStatus).toHaveText('Сохранено на устройстве');
   const second = await context.newPage(); await ready(second); await expect(second.getByText(/Страница была закрыта/).first()).toBeVisible();
   const conflict = second.getByText(/Беседа изменена или удалена в другой вкладке/);

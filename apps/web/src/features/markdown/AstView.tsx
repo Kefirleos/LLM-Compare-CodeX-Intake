@@ -2,14 +2,14 @@ import { Fragment, memo, useContext, useMemo } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import { toHast } from 'mdast-util-to-hast';
 import { toJsxRuntime } from 'hast-util-to-jsx-runtime';
-import type { Nodes } from 'hast';
-import type { Root } from 'mdast';
+import type { Element, Nodes } from 'hast';
+import type { FootnoteReference } from 'mdast';
 import type { AstBlock } from './engine';
+import type { FootnoteCalls } from './footnotes';
 import { CodeBlock, safeMarkdownUrl } from './controls';
 import { RevealContext, RevealText } from './RevealText';
 
-export function renderAst(ast: Root, reveal?: Pick<AstBlock, 'from' | 'to' | 'prefixLength' | 'trailingWhitespace'>) {
-  const hast = toHast(ast);
+function renderHast(hast: Nodes, reveal?: AstBlock) {
   function sanitize(node: Nodes, skipReveal = false): Nodes {
     if (reveal && !skipReveal && node.type === 'text' && node.value.trim() && node.position?.start.offset !== undefined && node.position.end.offset !== undefined) {
       const start = reveal.from + node.position.start.offset - reveal.prefixLength;
@@ -25,7 +25,8 @@ export function renderAst(ast: Root, reveal?: Pick<AstBlock, 'from' | 'to' | 'pr
         node.children = [{ type: 'text', value: `Изображение не загружено${alt ? `: ${alt}` : ''}` }];
       } else if (node.tagName === 'a') {
         const href = safeMarkdownUrl(String(node.properties.href ?? ''));
-        if (href) node.properties = { ...node.properties, href, target: '_blank', rel: ['noopener', 'noreferrer'] };
+        if (href && (node.properties.dataFootnoteRef === true || node.properties.dataFootnoteBackref === '')) node.properties.href = href;
+        else if (href) node.properties = { ...node.properties, href, target: '_blank', rel: ['noopener', 'noreferrer'] };
         else { node.tagName = 'span'; node.properties = {}; }
       }
     }
@@ -40,7 +41,16 @@ export function renderAst(ast: Root, reveal?: Pick<AstBlock, 'from' | 'to' | 'pr
   } });
 }
 
-export const AstView = memo(function AstView({ block }: { block: AstBlock }) {
+export const AstView = memo(function AstView({ block, calls }: { block: AstBlock; calls: FootnoteCalls | undefined }) {
   const reveal = useContext(RevealContext);
-  return useMemo(() => renderAst(block.ast, reveal ? block : undefined), [block, reveal]);
+  return useMemo(() => renderHast(toHast(block.ast, { handlers: {
+    footnoteReference(_state, node: FootnoteReference) {
+      const call = calls?.get(node);
+      return call ? structuredClone(call) : { type: 'text', value: `[^${node.label ?? node.identifier}]` };
+    },
+  } }), reveal ? block : undefined), [block, calls, reveal]);
+});
+
+export const FootnoteView = memo(function FootnoteView({ footer }: { footer: Element }) {
+  return useMemo(() => renderHast(structuredClone(footer)), [footer]);
 });

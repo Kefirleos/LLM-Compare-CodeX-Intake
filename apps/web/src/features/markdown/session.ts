@@ -27,7 +27,7 @@ export class MarkdownSession {
   private blocks: readonly AstBlock[] = [];
 
   constructor(private readonly documentId: string, private readonly publish: (blocks: readonly AstBlock[], stats: ParseStats) => void,
-    private readonly fail: (message: string) => void, private readonly factory?: () => ParserPort) {}
+    private readonly fail: (message: string) => void, private readonly factory?: (streaming: boolean) => ParserPort) {}
 
   update(text: string, finalized: boolean) {
     if (!this.active || this.failed) return;
@@ -64,7 +64,7 @@ export class MarkdownSession {
       this.timer = undefined;
       try {
         if (!this.port) {
-          this.port = this.factory!();
+          this.port = this.factory!(!this.finalized);
           this.port.onmessage = (event) => this.receive(event.data);
           this.port.onerror = () => this.reportFailure();
         }

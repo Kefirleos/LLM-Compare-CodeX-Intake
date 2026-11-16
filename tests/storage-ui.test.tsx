@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ComparisonRequest, ComparisonResponse, ModelCatalog, RetryRequest } from '@llm-compare/contracts';
 import { ConversationWorkspace } from '../apps/web/src/features/storage/ConversationWorkspace';
 import { ConversationRepository, StorageError } from '../apps/web/src/features/storage/repository';
+import type { HistoryNotice } from '../apps/web/src/features/storage/repository';
 import type { ConversationData } from '../apps/web/src/features/storage/schema';
 import { sendComparison } from '../apps/web/src/api/comparisons';
 import { fetchCatalog } from '../apps/web/src/api/catalog';
@@ -84,6 +85,49 @@ it('restores partial response and Thinking as interrupted and permits only an ex
   expect(send).toHaveBeenCalledTimes(2); expect(send.mock.calls[1]![0].prompt).toBe('Original question');
 });
 
+it.each(['startup', 'history'] as const)('recovers a pending checkpoint through %s without claiming its revision', async (entryPoint) => {
+  const writer = await mount();
+  await finishedConversation();
+  const original = (await savedData())!;
+  writer.unmount();
+  const { meta, record } = await inspector.load(original.conversationId);
+  const turn = original.turns[0]!;
+  const pending = Object.fromEntries(turn.targets.map((target) => [
+    target.columnId, { status: 'pending' as const, attemptId: target.attemptId, text: 'Partial answer' },
+  ]));
+  const checkpoint = await inspector.saveSnapshot({ ...original, turns: [{ ...turn, results: pending }] }, record!.revision, meta.generation);
+
+  if (entryPoint === 'history') {
+    sessionStorage.setItem('llm-compare-active-conversation', crypto.randomUUID());
+  }
+  await mount();
+  if (entryPoint === 'history') await userEvent.click(screen.getByRole('button', { name: 'Question' }));
+  expect(await screen.findAllByText(/Страница была закрыта/)).toHaveLength(2);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 550)); });
+  expect((await inspector.load(original.conversationId)).record).toEqual(checkpoint);
+  await expect(inspector.saveSnapshot(original, checkpoint.revision, meta.generation)).resolves.toMatchObject({ data: original });
+  expect(send).toHaveBeenCalledOnce();
+});
+
+it('honors a saving preference disabled by another tab between listing and loading history', async () => {
+  const writer = await mount();
+  await finishedConversation();
+  writer.unmount();
+  const originalLoad = ConversationRepository.prototype.load;
+  const load = vi.spyOn(ConversationRepository.prototype, 'load').mockImplementationOnce(async function (this: ConversationRepository, id) {
+    await inspector.setEnabled(false, 0);
+    return originalLoad.call(this, id);
+  });
+  try {
+    await mount();
+    expect(screen.queryByText('Answer a')).toBeNull();
+    expect((screen.getByRole('checkbox', { name: 'Сохранять на этом устройстве' }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByRole('button', { name: 'Question' })).toBeTruthy();
+  } finally {
+    load.mockRestore();
+  }
+});
+
 it('blocks stale autosave, keeps the local draft and offers an explicit copy', async () => {
   await mount(); await finishedConversation();
   const original = (await savedData())!; const loaded = await inspector.load(original.conversationId);
@@ -106,6 +150,44 @@ it('clears history explicitly and prevents old tabs from restoring it later', as
   await waitFor(async () => expect((await inspector.list()).entries).toHaveLength(0));
   expect(screen.queryByText('Answer a')).toBeNull();
   await expect(inspector.saveSnapshot(before, old.record!.revision, old.meta.generation)).rejects.toMatchObject({ code: 'CONFLICT' });
+});
+
+it('keeps saving after a clear transaction fails', async () => {
+  await mount();
+  const user = await finishedConversation();
+  const original = (await savedData())!;
+  const clear = vi.spyOn(ConversationRepository.prototype, 'clear').mockRejectedValueOnce(new DOMException('transient failure', 'UnknownError'));
+  try {
+    await user.click(screen.getByRole('button', { name: /^История$/ }));
+    await user.click(screen.getByRole('button', { name: 'Очистить историю' }));
+    await user.click(screen.getByRole('button', { name: 'Подтвердить удаление' }));
+    await screen.findByText(/Локальная история недоступна или заполнена/);
+    await user.click(screen.getByRole('button', { name: 'Отмена' }));
+    fireEvent.change(screen.getByLabelText('Ваш вопрос'), { target: { value: 'after failed clear' } });
+    await waitFor(async () => expect((await inspector.load(original.conversationId)).record?.data.draft).toBe('after failed clear'), { timeout: 2000 });
+  } finally {
+    clear.mockRestore();
+  }
+});
+
+it('ignores late notices from an older generation and continues saving', async () => {
+  let deliver!: (notice: HistoryNotice) => void;
+  const subscribe = vi.spyOn(ConversationRepository.prototype, 'subscribe').mockImplementation((listener) => {
+    deliver = listener;
+    return () => {};
+  });
+  try {
+    await inspector.clear(0);
+    await mount();
+    await finishedConversation();
+    const original = (await savedData())!;
+    act(() => deliver({ type: 'clear', generation: 0 }));
+    expect(screen.queryByText(/Беседа изменена или удалена в другой вкладке/)).toBeNull();
+    fireEvent.change(screen.getByLabelText('Ваш вопрос'), { target: { value: 'new generation draft' } });
+    await waitFor(async () => expect((await inspector.load(original.conversationId)).record?.data.draft).toBe('new generation draft'), { timeout: 2000 });
+  } finally {
+    subscribe.mockRestore();
+  }
 });
 
 it('removes one saved conversation after confirmation without restoring it on reload', async () => {
@@ -137,6 +219,24 @@ it('persists saving-off and leaves previous conversations intact', async () => {
   expect((await inspector.load(original.conversationId)).record?.data.draft).not.toBe('not saved');
   view.unmount(); await mount(); expect((screen.getByRole('checkbox', { name: 'Сохранять на этом устройстве' }) as HTMLInputElement).checked).toBe(false);
   expect(screen.queryByText('Answer a')).toBeNull(); expect((await inspector.list()).entries).toHaveLength(1);
+});
+
+it('resumes autosave when a saving-preference write fails', async () => {
+  await mount();
+  const user = await finishedConversation();
+  const original = (await savedData())!;
+  const writePreference = vi.spyOn(ConversationRepository.prototype, 'setEnabled').mockRejectedValueOnce(new DOMException('transient failure', 'UnknownError'));
+  try {
+    await user.click(screen.getByRole('button', { name: /^История$/ }));
+    const checkbox = screen.getByRole('checkbox', { name: 'Сохранять на этом устройстве' }) as HTMLInputElement;
+    await user.click(checkbox);
+    await screen.findByText(/Локальная история недоступна или заполнена/);
+    expect(checkbox.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Ваш вопрос'), { target: { value: 'after failed preference change' } });
+    await waitFor(async () => expect((await inspector.load(original.conversationId)).record?.data.draft).toBe('after failed preference change'), { timeout: 2000 });
+  } finally {
+    writePreference.mockRestore();
+  }
 });
 
 it('flushes the previous conversation before starting a new one and opens it from the list', async () => {

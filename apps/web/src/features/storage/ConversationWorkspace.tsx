@@ -47,7 +47,7 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
   const historyPanel = useRef<HTMLDivElement>(null);
   const historyTrigger = useRef<HTMLButtonElement>(null);
   const runtime = useRef({ repository: null as ConversationRepository | null, saver: null as ConversationSaver | null,
-    meta: { schemaVersion: 1, generation: 0, enabled: true } as StorageMeta, data: null as ConversationData | null, busy: false, blocked: false, key: 0, alive: false, usable: false, forceCapture: false });
+    meta: { schemaVersion: 1, generation: 0, enabled: true } as StorageMeta, data: null as ConversationData | null, busy: false, blocked: false, key: 0, alive: false, usable: false });
   const epoch = useRef(0);
   const actionLock = useRef(false);
 
@@ -91,9 +91,9 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
     state.saver = saver; saver.setEnabled(state.meta.enabled);
   }, []);
 
-  const install = useCallback((data?: ConversationData, revision = 0, forceCapture = false) => {
+  const install = useCallback((data?: ConversationData, revision = 0) => {
     const state = runtime.current;
-    state.data = data ?? null; state.busy = false; state.forceCapture = forceCapture;
+    state.data = data ?? null; state.busy = false;
     rememberActive(data?.conversationId);
     bind(data?.conversationId ?? '', revision);
     setCurrentId(data?.conversationId ?? ''); setSaved(revision > 0); setProblem('');
@@ -107,8 +107,7 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
     const unchanged = previousData?.conversationId === data.conversationId && previousData.mode === data.mode && previousData.columns === data.columns
       && previousData.activeColumn === data.activeColumn && previousData.draft === data.draft && previousData.turns.length === data.turns.length
       && previousData.turns.every((turn, index) => turn === data.turns[index]);
-    if (unchanged && state.busy === running && !state.forceCapture) return;
-    state.forceCapture = false;
+    if (unchanged && state.busy === running) return;
     if (state.data?.conversationId !== data.conversationId) {
       const previous = state.saver;
       // Finish the previous conversation before detaching, without reusing its revision.
@@ -142,15 +141,17 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
       if (list.meta.enabled && initialId) {
         const loaded = await repository.load(initialId);
         if (!valid()) return;
-        state.meta = loaded.meta;
-        if (loaded.record) { const restored = recoverConversation(loaded.record.data); install(restored, loaded.record.revision, restored !== loaded.record.data); } else install();
+        state.meta = loaded.meta; setEnabled(loaded.meta.enabled);
+        // Recover the local view without writing over a checkpoint from an active tab.
+        if (loaded.meta.enabled && loaded.record) install(recoverConversation(loaded.record.data), loaded.record.revision);
+        else install();
       } else install();
       if (valid()) setReady(true);
     }).catch((cause: unknown) => { if (valid()) { state.usable = false; install(); setAvailable(false); setProblem(storageMessage(cause)); setReady(true); } });
     unsubscribe = repository.subscribe((notice: HistoryNotice) => {
-      if (!valid()) return;
+      if (!valid() || notice.generation < state.meta.generation) return;
       const data = state.data;
-      if (notice.generation !== state.meta.generation || ((notice.type === 'save' || notice.type === 'remove') && notice.id === data?.conversationId
+      if (notice.generation > state.meta.generation || ((notice.type === 'save' || notice.type === 'remove') && notice.id === data?.conversationId
         && (notice.type === 'remove' || (notice.revision ?? 0) > (state.saver?.revision ?? 0)))) {
         state.blocked = true; state.saver?.pause(); setProblem(storageMessage(new StorageError('CONFLICT'))); setSaved(false);
       }
@@ -176,8 +177,7 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
       const loaded = await state.repository.load(id);
       if (!loaded.record) throw new StorageError('CONFLICT');
       state.meta = loaded.meta; setEnabled(loaded.meta.enabled);
-      const restored = recoverConversation(loaded.record.data);
-      install(restored, loaded.record.revision, restored !== loaded.record.data);
+      install(recoverConversation(loaded.record.data), loaded.record.revision);
       closeHistory();
       if (!explicit) requestAnimationFrame(() => historyTrigger.current?.focus());
     } catch (cause) { setProblem(storageMessage(cause)); }
@@ -208,7 +208,10 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
       if (value && state.data) { const revision = state.saver?.revision ?? 0; bind(state.data.conversationId, revision); state.saver?.update(state.data, state.busy); }
       else state.saver?.setEnabled(false);
       setProblem('');
-    } catch (cause) { setEnabled(state.meta.enabled); setProblem(storageMessage(cause)); }
+    } catch (cause) {
+      state.saver?.setEnabled(state.meta.enabled);
+      setEnabled(state.meta.enabled); setProblem(storageMessage(cause));
+    }
     finally { actionLock.current = false; setAction(false); }
   }
 
@@ -218,7 +221,6 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
     actionLock.current = true; setAction(true);
     try {
       if (confirm === 'clear') {
-        state.saver?.dispose(); state.saver = null;
         state.meta = await state.repository.clear(state.meta.generation); setEntries([]); install();
       } else {
         await state.saver?.flush();

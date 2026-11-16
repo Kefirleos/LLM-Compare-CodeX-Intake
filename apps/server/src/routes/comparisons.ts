@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { comparisonRequestSchema, comparisonResponseSchema, retryRequestSchema } from '@llm-compare/contracts';
+import { MAX_NDJSON_LINE_BYTES, MAX_NDJSON_STREAM_BYTES, comparisonRequestSchema, comparisonResponseSchema, retryRequestSchema } from '@llm-compare/contracts';
 import type { ComparisonTarget } from '@llm-compare/contracts';
 import type { LlmAdapter } from '../adapters/types.js';
 import { runComparison } from '../generation/runner.js';
@@ -65,18 +65,42 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
             'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no',
           });
           reply.raw.flushHeaders();
+          const frame = (event: OutgoingEvent, seq: number) => JSON.stringify({ v: 1, runId: input.runId, turnId: input.turnId, seq, ...event }) + '\n';
+          // The complete result repeats previously sent text. Reserve a whole line per terminal,
+          // plus the longest two control frames, before sharing the remaining bytes across models.
+          const controlBytes = Buffer.byteLength(frame({ type: 'run_started' }, Number.MAX_SAFE_INTEGER))
+            + Buffer.byteLength(frame({ type: 'run_completed' }, Number.MAX_SAFE_INTEGER));
+          const bytesPerAttempt = Math.floor((MAX_NDJSON_STREAM_BYTES - controlBytes) / targets.length) - (MAX_NDJSON_LINE_BYTES + 1);
+          const used = new Map<string, number>();
           let seq = 0;
           let queue = Promise.resolve();
           const emit = (event: OutgoingEvent) => {
+            controller.signal.throwIfAborted();
+            const record = frame(event, seq + 1);
+            const length = Buffer.byteLength(record);
+            if ('columnId' in event) {
+              const next = (used.get(event.columnId) ?? 0) + length;
+              if (next > bytesPerAttempt || length > MAX_NDJSON_LINE_BYTES + 1) {
+                throw new AdapterError({ code: 'OUTPUT_LIMIT', message: 'Поток модели содержит слишком много данных.', retryable: false });
+              }
+              used.set(event.columnId, next);
+            } else if (length > MAX_NDJSON_LINE_BYTES + 1) {
+              throw new Error('Terminal record exceeds NDJSON line limit');
+            }
+            seq++;
             // Each producer awaits its write: at most four pending records, no unbounded queue.
             queue = queue.then(async () => {
               controller.signal.throwIfAborted();
-              const record = JSON.stringify({ v: 1, runId: input.runId, turnId: input.turnId, seq: ++seq, ...event }) + '\n';
               if (reply.raw.write(record)) return;
               await new Promise<void>((resolve, reject) => {
                 const cleanup = () => { clearTimeout(timer); reply.raw.off('drain', drain); controller.signal.removeEventListener('abort', abort); };
                 const drain = () => { cleanup(); resolve(); };
-                const abort = () => { cleanup(); reject(new Error('Stream closed')); };
+                const abort = () => {
+                  cleanup();
+                  // A graceful end would wait for the stalled socket to flush its buffer.
+                  reply.raw.destroy();
+                  reject(new Error('Stream closed'));
+                };
                 const timer = setTimeout(() => { controller.abort(); }, 5000);
                 reply.raw.once('drain', drain);
                 controller.signal.addEventListener('abort', abort, { once: true });
@@ -90,7 +114,7 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
           } catch {
             controller.abort();
           } finally {
-            reply.raw.end();
+            if (!reply.raw.destroyed) reply.raw.end();
           }
           return;
         }
