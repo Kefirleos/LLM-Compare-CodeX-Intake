@@ -33,6 +33,14 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768],
     await compare(page, '[fixture:long]'); await completed(page);
     await expect(page.locator('.answer-cell.is-selected .markdown h2').first()).toHaveText('Section 0');
     await noOverflow(page);
+    const question = page.locator('.question');
+    const questionBox = (await question.boundingBox())!;
+    const promptBox = (await question.getByText('[fixture:long]', { exact: true }).boundingBox())!;
+    const grid = (await page.locator('.comparison-grid').boundingBox())!;
+    expect(questionBox.width).toBeCloseTo(grid.width, 0);
+    expect(questionBox.height).toBeLessThan(48);
+    expect(promptBox.x - questionBox.x).toBeLessThan(110);
+    if (width === 390 || width === 1440) await page.screenshot({ path: info.outputPath(`question-${width}.png`) });
     await page.locator('.comparison-scroll').evaluate((element) => { element.scrollTop = 800; });
     const scrollBox = await page.locator('.comparison-scroll').boundingBox();
     const heading = await page.locator('.column-heading.is-selected').boundingBox();

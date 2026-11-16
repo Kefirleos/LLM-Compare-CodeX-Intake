@@ -51,10 +51,11 @@ h2 { font-size: 14px; font-weight: 550; margin: 0; overflow-wrap: anywhere; }
 .icon-button { border: 0; background: transparent; font-size: 22px; padding: 0 6px; line-height: 1; }
 .add-column { display: flex; justify-content: center; padding: 5px 6px; border-bottom: 1px solid #30323b; background: #17181d; position: sticky; top: 0; z-index: 2; }
 .add-column button { border-style: dashed; height: 40px; width: 40px; font-size: 23px; padding: 0; }
-.question { grid-column: 1 / -1; justify-self: end; min-width: 0; max-width: min(42rem, calc(100% - 56px)); margin: 16px 28px 0; padding: 12px 16px; background: #1b1c23; border: 1px solid #30323b; border-radius: 12px; }
-.question span { color: #b5a7ed; font-size: 11px; }
-.question p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; line-height: 1.6; margin: 4px 0 0; }
-.answer-cell { min-width: 0; padding: 26px 20px; border-right: 1px solid #30323b; min-height: 200px; }
+.question { grid-column: 1 / -1; display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 12px; min-width: 0; padding: 9px 20px; background: #1d1b26; border-block: 1px solid #353040; }
+.add-column + .question { border-block-start: 0; }
+.question span { color: #c1b4ed; font-size: 11px; font-weight: 600; }
+.question p { max-width: 85ch; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; margin: 0; }
+.answer-cell { min-width: 0; padding: 16px 20px 24px; border-right: 1px solid #30323b; min-height: 200px; }
 .markdown { overflow-wrap: anywhere; line-height: 1.75; font-size: 14px; min-width: 0; }
 .markdown > :first-child { margin-top: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 { font-weight: 600; line-height: 1.4; letter-spacing: normal; margin: 24px 0 12px; }
@@ -140,8 +141,8 @@ textarea::placeholder { color: #9397a3; }
   .column-heading { display: none; grid-row: 1; grid-column: 1; top: var(--tab-height); padding-inline: 16px; }
   .column-heading.is-selected { display: flex; }
   .add-column { grid-row: 1; grid-column: 2; top: var(--tab-height); }
-  .question { max-width: calc(100% - 32px); margin: 12px 16px 0; }
-  .answer-cell { display: none; grid-column: 1 / -1; padding: 22px 16px; border: 0; }
+  .question { gap: 8px; padding-inline: 16px; }
+  .answer-cell { display: none; grid-column: 1 / -1; padding: 14px 16px 20px; border: 0; }
   .answer-cell.is-selected { display: block; }
   .empty-comparison { grid-row: 2; padding-inline: 16px; }
   .topbar { padding-inline: 16px; }
