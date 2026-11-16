@@ -56,6 +56,10 @@ describe('comparison interface', () => {
     await act(async () => finish(response));
     const first = screen.getByRole('region', { name: 'Ответ Демо · Краткий ответ' });
     const second = screen.getByRole('region', { name: 'Ответ Демо · Подробный ответ' });
+    const metrics = first.querySelector('details');
+    expect(metrics?.open).toBe(false);
+    await user.click(within(first).getByText('Метрики'));
+    expect(metrics?.open).toBe(true);
     expect(within(first).getByText('Минимальное время до ответа')).toBeTruthy();
     expect(within(first).queryByText('Минимальное общее время')).toBeNull();
     expect(within(second).getByText('Минимальное общее время')).toBeTruthy();

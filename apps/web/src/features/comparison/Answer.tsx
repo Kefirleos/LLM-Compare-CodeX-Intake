@@ -12,12 +12,12 @@ export function Answer({ result, retry, disabled, totalLeader, firstAnswerLeader
     {result.text && <MarkdownAnswer key={result.attemptId ?? 'answer'} documentId={result.attemptId ?? 'answer'} text={result.text} finalized={result.status !== 'pending'} />}
     {result.status === 'succeeded' && !result.text && <p className="muted">Модель вернула пустой ответ.</p>}
     {result.status === 'pending' ? <p className="pending" role="status">Получение ответа…</p> : <>
-      {'totalMs' in result && <AttemptMetrics result={result} totalLeader={totalLeader} firstAnswerLeader={firstAnswerLeader} />}
       {failed && <div className="answer-error"><strong>{result.status === 'stopped' ? 'Остановлено' : result.status === 'cancelled' || result.status === 'interrupted' ? 'Прервано' : result.status === 'timed_out' ? 'Таймаут' : result.status === 'network_error' ? 'Соединение прервано' : 'Ошибка'}</strong>
         <p>{'message' in result ? result.message : result.error!.message}</p>
         {retry && ('message' in result || result.error?.retryable) ? <button disabled={disabled} onClick={retry}>Повторить ответ</button>
           : !retry && <p className="muted">Повтор доступен только для последнего вопроса.</p>}
       </div>}
+      {'totalMs' in result && <AttemptMetrics result={result} totalLeader={totalLeader} firstAnswerLeader={firstAnswerLeader} />}
     </>}
   </>;
 }

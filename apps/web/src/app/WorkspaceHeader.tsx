@@ -1,8 +1,11 @@
 import type { ReactNode } from 'react';
 
-export function WorkspaceHeader({ actions, history }: { actions?: ReactNode; history?: ReactNode }) {
+export function WorkspaceHeader({ mode, actions, history }: { mode?: string; actions?: ReactNode; history?: ReactNode }) {
   return <header className="topbar">
-    <a className="brand" href="/">LLM Compare<span className="brand-dot" aria-hidden="true" /></a>
+    <div className="brand-group">
+      <a className="brand" href="/"><span className="brand-mark" aria-hidden="true" />LLM Compare</a>
+      {mode && <span className="badge">{mode}</span>}
+    </div>
     {actions}
     {history}
   </header>;

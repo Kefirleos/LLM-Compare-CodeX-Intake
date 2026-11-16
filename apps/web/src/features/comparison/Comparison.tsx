@@ -16,6 +16,7 @@ import type { ConversationData } from '../storage/schema';
 type Column = { columnId: string; model: ModelDescriptor };
 
 const createColumn = (model: ModelDescriptor): Column => ({ columnId: crypto.randomUUID(), model });
+const modelName = (model: ModelDescriptor) => model.metadataSource === 'mock' ? model.displayName.replace(/^Демо · /u, '') : model.displayName;
 const statusText = (result?: DisplayResult) => {
   if (!result) return 'Готова к вопросу';
   return { pending: 'Получение ответа…', succeeded: 'Готово', failed: 'Ошибка', timed_out: 'Таймаут', cancelled: 'Прервано', interrupted: 'Прервано', network_error: 'Соединение прервано', stopped: 'Остановлено' }[result.status];
@@ -199,16 +200,42 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
     setTurn(null); setPastTurns([]); setConversationId(crypto.randomUUID()); setConversationMode(catalog.mode); setError(''); setRecoverPrompt('');
   }
 
+  const views = turn ? [...pastTurns, turn] : [];
+  const firstView = views[0];
+  const selectedColumn = columns.find((column) => column.columnId === selectedId);
+  const removeButton = (column: Column) => <button type="button" className="icon-button" aria-label={`Удалить ${column.model.displayName}`}
+    title={columns.length <= 2 ? 'Минимум две модели' : 'Удалить модель'}
+    disabled={busy || catalogRefreshing || workspaceLocked || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>;
+  const contextNote = (column: Column) => skippedTurns(views, column.columnId) > 0 &&
+    <p className="context-note">Неуспешные ходы пропускаются в контексте этой модели. Последний ответ можно повторить перед продолжением.</p>;
+  const modelTools = <div className="model-tools" role="group" aria-label="Управление моделями">
+    {turn && mobile && selectedColumn && columns.length > 2 && removeButton(selectedColumn)}
+    <button type="button" ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length}
+      aria-label="Добавить модель" onClick={() => setPicker(true)}><span aria-hidden="true">{turn ? `Модели · ${columns.length}` : '+ Модели'}</span></button>
+    <button type="button" className="refresh-models" disabled={busy || catalogRefreshing || workspaceLocked}
+      aria-label="Обновить модели" title={catalogRefreshing ? 'Обновление…' : 'Обновить модели'}
+      onClick={() => { void refreshCatalog(); }}><span aria-hidden="true">↻</span></button>
+  </div>;
+
   return <>
-    <WorkspaceHeader history={history} actions={<div className="toolbar-actions"><span className="badge">{catalog.mode === 'mock' ? 'Демо' : 'Live'}</span>
-      <button disabled={busy || catalogRefreshing || workspaceLocked} onClick={() => { void refreshCatalog(); }}>{catalogRefreshing ? 'Обновление…' : 'Обновить модели'}</button>
-      <button onClick={reset} disabled={busy || catalogRefreshing || workspaceLocked || (!turn && !hasUnavailable)}><span aria-hidden="true">+ </span>Новое сравнение</button>
+    <WorkspaceHeader mode={catalog.mode === 'mock' ? 'Демо' : 'Live'} history={history} actions={(turn || hasUnavailable) && <div className="toolbar-actions">
+      <button onClick={reset} aria-label="Новое сравнение" disabled={busy || catalogRefreshing || workspaceLocked}>
+        <span aria-hidden="true">+ </span><span className="new-comparison-label">Новое сравнение</span><span className="new-comparison-short" aria-hidden="true">Новое</span>
+      </button>
     </div>} />
     {notices}
     {catalog.models.length < 2 && <p className="notice" role="alert">Для сравнения нужны хотя бы две доступные модели.</p>}
     {hasUnavailable && catalog.models.length >= 2 && <p className="notice" role="alert">Выбранная модель больше недоступна. Начните новое сравнение, чтобы выбрать доступные модели. Прежние ответы сохранены до сброса.</p>}
     {catalogError && <p className="run-error" role="alert">{catalogError}</p>}
-    <div className="comparison-viewport"><div className="comparison-scroll">
+    <div className={turn ? 'workspace' : 'workspace workspace-start'}>
+    {firstView ? <div className="comparison-viewport"><div className="comparison-scroll" style={{ '--columns': columns.length } as CSSProperties}>
+      <div className="question-bar">
+        <div className="question"><span>Ваш вопрос</span><p>{firstView.prompt}</p></div>
+        {modelTools}
+      </div>
+      {!mobile && <div className="column-links" aria-hidden="true">
+        {columns.map((column) => <span key={column.columnId} />)}
+      </div>}
       {mobile && <div className="mobile-tabs" role="tablist" aria-label="Модели" onKeyDown={(event) => {
         const index = columns.findIndex((column) => column.columnId === selectedId);
         let next = index;
@@ -223,39 +250,45 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
       }}>
         {columns.map((column) => <button key={column.columnId} id={`tab-${column.columnId}`} role="tab" aria-selected={selectedId === column.columnId}
           aria-controls={`panel-${column.columnId}`} tabIndex={selectedId === column.columnId ? 0 : -1} onClick={() => setActiveColumn(column.columnId)}>
-          {column.model.displayName}<small>{statusText(turn?.results[column.columnId])}</small>
+          {modelName(column.model)}<small>{statusText(turn?.results[column.columnId])}</small>
         </button>)}
       </div>}
-      <div className="comparison-grid" style={{ '--columns': columns.length } as CSSProperties}>
-        {columns.map((column) => <div key={column.columnId} className={`column-heading ${selectedId === column.columnId ? 'is-selected' : ''}`}>
-          <div><h2>{column.model.displayName}</h2><p>{column.model.provider}</p>
-            {skippedTurns([...pastTurns, ...(turn ? [turn] : [])], column.columnId) > 0 && <p className="context-note">Неуспешные ходы пропускаются в контексте этой модели. Последний ответ можно повторить перед продолжением.</p>}
+      <div className="comparison-grid">
+        {mobile ? selectedColumn && contextNote(selectedColumn) : columns.map((column) => <div key={column.columnId} className={`column-heading ${selectedId === column.columnId ? 'is-selected' : ''}`}>
+          <div><h2 aria-label={column.model.displayName}>{modelName(column.model)}</h2>
+            {column.model.metadataSource !== 'mock' && <p>{column.model.provider}</p>}
+            {contextNote(column)}
           </div>
-          <button className="icon-button" aria-label={`Удалить ${column.model.displayName}`} title={columns.length <= 2 ? 'Минимум две модели' : 'Удалить модель'}
-            disabled={busy || catalogRefreshing || workspaceLocked || columns.length <= 2} onClick={() => removeColumn(column.columnId)}>×</button>
+          {views.length === 1 && <span className="column-status">{statusText(turn?.results[column.columnId])}</span>}
+          {removeButton(column)}
         </div>)}
-        <div className="add-column"><button ref={addButton} disabled={busy || catalogBlocked || columns.length >= 4 || catalog.models.length <= columns.length} aria-label="Добавить модель" onClick={() => setPicker(true)}>+</button></div>
-        {!turn && <div className="empty-comparison" {...(mobile && selectedId ? { id: `panel-${selectedId}`, role: 'tabpanel', 'aria-labelledby': `tab-${selectedId}` } : {})}>Выберите 2–4 модели и задайте вопрос ниже.</div>}
-        {!turn && mobile && columns.filter((column) => column.columnId !== selectedId).map((column) => <section key={column.columnId} id={`panel-${column.columnId}`} role="tabpanel" aria-labelledby={`tab-${column.columnId}`} hidden />)}
-        {[...pastTurns, ...(turn ? [turn] : [])].map((view) => {
+        {views.map((view, index) => {
           const visible = Object.fromEntries(columns.flatMap((column) => view.results[column.columnId] ? [[column.columnId, view.results[column.columnId]!]] : []));
           const leaders = timingLeaders(visible, view !== turn || !busy);
           return <Fragment key={view.turnId}>
-          <div className="question"><span>Ваш вопрос</span><p>{view.prompt}</p></div>
+          {index > 0 && <div className="question next-question"><span>Ваш вопрос</span><p>{view.prompt}</p></div>}
           {columns.map((column) => <section key={column.columnId} id={view === turn ? `panel-${column.columnId}` : `panel-${view.turnId}-${column.columnId}`}
             role={mobile && view === turn ? 'tabpanel' : 'region'} hidden={mobile && selectedId !== column.columnId}
             aria-labelledby={mobile && view === turn ? `tab-${column.columnId}` : undefined}
-            className={`answer-cell ${selectedId === column.columnId ? 'is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
+            className={`answer-cell${index > 0 ? ' continued-turn' : ''}${selectedId === column.columnId ? ' is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
             <Answer result={view.results[column.columnId]} retry={view === turn ? () => retry(column) : undefined} disabled={busy || catalogBlocked || conversationMode !== catalog.mode || !availableIds.has(column.model.id)}
               totalLeader={leaders.total.has(column.columnId)} firstAnswerLeader={leaders.firstAnswer.has(column.columnId)} />
           </section>)}
         </Fragment>;
         })}
       </div>
-    </div></div>
+    </div></div> : <div className="start-intro">
+      <span className="start-mark" aria-hidden="true"><i /><i /></span>
+      <h1 className="start-title">Новое сравнение</h1>
+    </div>}
     {error && <div className="run-error" role="alert"><p>{error}</p>{recoverPrompt && recoverPrompt !== draft && <button onClick={() => setDraft(recoverPrompt)}>Восстановить отправленный вопрос</button>}</div>}
     <div className="run-status" role="status">{busy ? 'Ответы поступают. Генерацию можно остановить.' : turn ? 'Сравнение завершено.' : ''}</div>
-    <Composer draft={draft} onChange={setDraft} onSubmit={submit} onStop={stop} busy={busy} disabled={hasUnavailable || catalogBlocked} readOnly={workspaceLocked} />
+    <Composer draft={draft} onChange={setDraft} onSubmit={submit} onStop={stop} busy={busy} disabled={hasUnavailable || catalogBlocked} readOnly={workspaceLocked} followUp={Boolean(turn)}
+      modelControls={!turn && <div className="composer-models">
+        {columns.map((column) => <div className="model-chip" key={column.columnId}><h2 aria-label={column.model.displayName}>{modelName(column.model)}</h2>{removeButton(column)}</div>)}
+        {modelTools}
+      </div>} />
+    </div>
     {picker && <ModelPicker returnFocus={addButton.current} models={catalog.models} selectedIds={columns.map((column) => column.model.id)} onClose={closePicker} onSelect={(model) => {
       if (lock.current || workspaceLocked || columns.length >= 4 || columns.some((column) => column.model.id === model.id)) return;
       setColumns((current) => [...current, createColumn(model)]); closePicker();

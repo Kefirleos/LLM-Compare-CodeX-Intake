@@ -3,7 +3,8 @@ import { formatSeconds } from './metrics';
 
 export function AttemptMetrics({ result, totalLeader, firstAnswerLeader }: { result: AttemptResult; totalLeader: boolean; firstAnswerLeader: boolean }) {
   const timeLabel = result.status === 'succeeded' ? 'Полный ответ' : result.status === 'timed_out' ? 'Таймаут через' : result.status === 'cancelled' ? 'Прервано через' : 'Ошибка через';
-  return <div className="answer-metrics" aria-label="Метрики попытки">
+  return <details className="answer-metrics">
+    <summary><span className="answer-duration">{formatSeconds(result.totalMs)}</span><span>Метрики <span className="metrics-chevron" aria-hidden="true">⌄</span></span></summary>
     <dl>
       <div><dt>{timeLabel}</dt><dd>{formatSeconds(result.totalMs)}</dd></div>
       <div><dt>Первый фрагмент данных</dt><dd>{result.metrics?.firstEventMs != null ? formatSeconds(result.metrics.firstEventMs) : 'нет данных'}</dd></div>
@@ -17,5 +18,5 @@ export function AttemptMetrics({ result, totalLeader, firstAnswerLeader }: { res
       {firstAnswerLeader && <li title="Среди успешных ответов видимых колонок с измеренным первым фрагментом. Точность сравнения — 1 мс.">Минимальное время до ответа</li>}
     </ul>}
     {(totalLeader || firstAnswerLeader) && <p className="metrics-note">Среди успешных ответов этого вопроса{firstAnswerLeader ? '; первый фрагмент — среди измеренных' : ''}.</p>}
-  </div>;
+  </details>;
 }

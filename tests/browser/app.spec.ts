@@ -22,30 +22,31 @@ async function accessible(page: Page) {
 for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768], [1440, 900]] as const) {
   test(`four columns, sticky headers, overflow and accessibility at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height }); await ready(page); await accessible(page);
-    const viewport = await page.locator('.comparison-scroll').boundingBox();
-    expect(viewport!.height).toBeGreaterThanOrEqual(height * .75);
+    await expect(page.getByRole('heading', { name: 'Новое сравнение' })).toBeVisible();
+    await expect(page.locator('.comparison-grid')).toHaveCount(0);
     const history = page.getByRole('button', { name: 'История', exact: true });
     await expect(history).toHaveAttribute('aria-expanded', 'false');
     const composer = await page.locator('.composer-input').boundingBox();
-    expect(height - (composer!.y + composer!.height)).toBeGreaterThanOrEqual(width <= 640 ? 13 : 24);
+    expect(composer!.y).toBeGreaterThan(height * .2);
+    await noOverflow(page);
     await add(page, 'Медленный ответ'); await add(page, 'Ошибка');
     await expect(page.getByRole('button', { name: 'Добавить модель', exact: true })).toBeDisabled();
     await compare(page, '[fixture:long]'); await completed(page);
     await expect(page.locator('.answer-cell.is-selected .markdown h2').first()).toHaveText('Section 0');
     await noOverflow(page);
-    const question = page.locator('.question');
+    const question = page.locator('.question-bar');
     const questionBox = (await question.boundingBox())!;
     const promptBox = (await question.getByText('[fixture:long]', { exact: true }).boundingBox())!;
     const grid = (await page.locator('.comparison-grid').boundingBox())!;
     expect(questionBox.width).toBeCloseTo(grid.width, 0);
-    expect(questionBox.height).toBeLessThan(48);
     expect(promptBox.x - questionBox.x).toBeLessThan(110);
+    expect(promptBox.y + promptBox.height).toBeLessThan(grid.y);
     if (width === 390 || width === 1440) await page.screenshot({ path: info.outputPath(`question-${width}.png`) });
     await page.locator('.comparison-scroll').evaluate((element) => { element.scrollTop = 800; });
     const scrollBox = await page.locator('.comparison-scroll').boundingBox();
-    const heading = await page.locator('.column-heading.is-selected').boundingBox();
-    const tabsBox = width <= 1000 ? await page.getByRole('tablist').boundingBox() : null;
-    expect(Math.abs(heading!.y - scrollBox!.y - (tabsBox?.height ?? 0))).toBeLessThan(3);
+    const sticky = width <= 1000 ? page.getByRole('tablist') : page.locator('.column-heading.is-selected');
+    const stickyBox = await sticky.boundingBox();
+    expect(Math.abs(stickyBox!.y - scrollBox!.y)).toBeLessThan(3);
     if (width <= 1000) {
       const tabs = page.getByRole('tab'); await tabs.first().focus(); await tabs.first().press('End');
       await expect(tabs.last()).toHaveAttribute('aria-selected', 'true'); await expect(tabs.last()).toBeFocused();
