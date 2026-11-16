@@ -35,9 +35,10 @@
     "pretest": "npm run build -w @llm-compare/contracts",
     "test": "vitest run",
     "check": "node scripts/check.mjs",
-    "check:verbose": "npm run lint && npm run typecheck && npm test && npm run build && npm run check:markdown-worker && npm run check:browser",
+    "check:verbose": "npm run lint && npm run typecheck && npm test && npm run build && npm run check:markdown-worker && npm run check:browser && npm run check:demo",
     "check:markdown-worker": "node scripts/check-markdown-worker.mjs",
     "check:browser": "playwright test",
+    "check:demo": "playwright test --config tests/release/playwright.config.ts",
     "start": "npm run start -w @llm-compare/server"
   }
 }

@@ -5,8 +5,8 @@ import { loadConfig } from './config/index.js';
 try {
   const config = loadConfig();
   const app = buildApp(createAdapter(config));
-  await app.listen({ host: config.host, port: config.port });
-  console.log(`LLM Compare API: http://${config.host}:${config.port} (${config.mode})`);
+  const address = await app.listen({ host: config.host, port: config.port });
+  console.log(`LLM Compare API: ${address} (${config.mode})`);
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => { void app.close(); });
   }
