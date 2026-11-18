@@ -73,6 +73,34 @@ test('a follow-up moves to the new answers and leaves manual reading in place', 
   await noOverflow(page);
 });
 
+test('keeps a new question visible when an earlier answer grows before the next response', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await ready(page);
+  await compare(page, '[fixture:long]');
+  await completed(page);
+  await expect(page.locator('.answer-cell .markdown h2').last()).toHaveText('Section 59');
+
+  let releaseResponse!: () => void;
+  const responseReady = new Promise<void>((resolve) => { releaseResponse = resolve; });
+  await page.route('**/api/comparisons', async (route) => {
+    await responseReady;
+    await route.continue();
+  });
+  try {
+    await compare(page, '[fixture:usage]');
+    const question = page.locator('.next-question');
+    await expect(question).toBeInViewport();
+    // Model a late Markdown layout change while the upcoming response has no answer yet.
+    await page.locator('.answer-cell:not(.continued-turn)').first().evaluate((element) => {
+      element.style.minHeight = `${element.getBoundingClientRect().height + 1200}px`;
+    });
+    await expect(question).toBeInViewport();
+  } finally {
+    releaseResponse();
+  }
+  await completed(page);
+});
+
 test('scrolling up during a follow-up lets the user keep reading earlier text', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await ready(page);

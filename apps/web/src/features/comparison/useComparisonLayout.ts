@@ -91,13 +91,7 @@ export function useComparisonLayout(turnId: string | undefined) {
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const follow = turnId === submittedTurn.current ? followAnswerScroll(scroll, motion) : undefined;
     const updateFade = () => viewport.toggleAttribute('data-more-below', scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > 2);
-    let answerEnd = 0;
     const question = follow && content.querySelector<HTMLElement>(`.next-question[data-turn-id="${turnId}"]`);
-    if (question) {
-      const heading = content.querySelector<HTMLElement>('.desktop-models, .mobile-model-bar');
-      const top = question.getBoundingClientRect().top - content.getBoundingClientRect().top;
-      follow.moveTo(top - (heading?.offsetHeight ?? 0) - 12);
-    }
     const measure = () => {
       frame = 0;
       const reserved = Array.from(workspace.children).reduce((height, child) => {
@@ -111,10 +105,12 @@ export function useComparisonLayout(turnId: string | undefined) {
       updateFade();
 
       if (follow?.enabled) {
+        // Earlier answers can still reflow after the next question has been submitted.
+        const heading = question && content.querySelector<HTMLElement>('.desktop-models, .mobile-model-bar');
+        const questionTop = question ? question.getBoundingClientRect().top - contentBox.top - (heading?.offsetHeight ?? 0) - 12 : 0;
         const answers = content.querySelectorAll('[data-current-answer]:not([hidden]) > :is(.markdown, .markdown-fallback)');
-        const nextEnd = Math.max(0, ...Array.from(answers, (answer) => answer.getBoundingClientRect().bottom - contentBox.top));
-        if (nextEnd > answerEnd) follow.moveTo(Math.min(contentBox.height, nextEnd + 16) - height);
-        answerEnd = nextEnd;
+        const answerEnd = Math.max(0, ...Array.from(answers, (answer) => answer.getBoundingClientRect().bottom - contentBox.top));
+        follow.moveTo(Math.max(questionTop, Math.min(contentBox.height, answerEnd + 16) - height));
       }
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
