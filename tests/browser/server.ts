@@ -5,8 +5,18 @@ import { firstChunk, secondChunk, longAnswer } from './fixtures.js';
 
 // Dedicated loopback-only fixture server. It never loads configuration or an API key.
 const adapter = new FakeAdapter();
+const listModels = adapter.listModels.bind(adapter);
+adapter.listModels = async (signal) => (await listModels(signal)).map((model, index) => ({
+  ...model, pricing: { inputPerMillion: (index + 1) * 0.1, outputPerMillion: (index + 1) * 0.2, currency: 'USD' },
+}));
 const stream = adapter.stream.bind(adapter);
 adapter.stream = async function* (input, signal) {
+  if (input.prompt.startsWith('[fixture:usage]')) {
+    yield 'A completed answer.';
+    await delay(300, undefined, { signal });
+    yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 20 } };
+    return;
+  }
   if (input.prompt.startsWith('[fixture:stream]')) {
     yield firstChunk; await delay(2500, undefined, { signal }); yield secondChunk; return;
   }

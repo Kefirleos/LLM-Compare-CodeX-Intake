@@ -1,19 +1,27 @@
 import { z } from 'zod';
 import { utf8Bytes, decodeNdjson, serializePrompt } from '@llm-compare/contracts';
 import type { ModelDescriptor } from '@llm-compare/contracts';
-import type { LlmAdapter, PreparedPrompt, StreamChunk } from './types.js';
+import type { LlmAdapter, PreparedPrompt, ReportedUsage, StreamChunk } from './types.js';
 import { AdapterError } from './error.js';
 
 const UPSTREAM_ORIGIN = 'https://llm.codex.so';
 const catalogSchema = z.object({
   default: z.string().optional(),
-  models: z.array(z.object({ id: z.string().min(1).max(256), name: z.string().min(1).max(512) })).max(1000),
+  models: z.array(z.object({ id: z.string().min(1).max(256), name: z.string().min(1).max(512), pricing: z.unknown().optional() })).max(1000),
 }).refine(({ models }) => new Set(models.map((model) => model.id)).size === models.length);
-const generationSchema = z.object({ text: z.string() });
+const optionalRate = z.number().nonnegative().optional().catch(undefined);
+const pricingSchema = z.object({ input: z.number().nonnegative(), output: z.number().nonnegative(), cacheRead: optionalRate, cacheWrite: optionalRate });
+const count = z.number().int().nonnegative().nullable().catch(null);
+const usageSchema = z.object({ inputTokens: count, outputTokens: count });
+function reportedUsage(value: unknown): ReportedUsage | undefined {
+  const parsed = usageSchema.safeParse(value);
+  return parsed.success && (parsed.data.inputTokens !== null || parsed.data.outputTokens !== null) ? parsed.data : undefined;
+}
+const generationSchema = z.object({ text: z.string(), usage: z.unknown().optional() });
 const upstreamEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.enum(['start', 'text-start', 'text-end', 'reasoning-start', 'reasoning-end']) }),
   z.object({ type: z.enum(['text-delta', 'reasoning-delta']), delta: z.string() }),
-  z.object({ type: z.literal('finish'), finishReason: z.literal('stop').optional() }),
+  z.object({ type: z.literal('finish'), finishReason: z.literal('stop').optional(), usage: z.unknown().optional() }),
   z.object({ type: z.literal('error') }),
 ]);
 
@@ -108,11 +116,19 @@ export class CodexProxyAdapter implements LlmAdapter {
   async listModels(signal: AbortSignal): Promise<ModelDescriptor[]> {
     const parsed = catalogSchema.safeParse(await readBoundedJson(await this.request('/models', signal), 1024 * 1024));
     if (!parsed.success) throw protocolError();
-    return parsed.data.models.map(({ id, name }) => ({
-      id, displayName: name, provider: providers[id.split('/')[0] ?? ''] ?? 'Провайдер не указан',
-      capabilities: { streaming: 'unknown', reasoning: 'unknown' },
-      pricing: null, metadataSource: 'upstream',
-    }));
+    return parsed.data.models.map(({ id, name, pricing }) => {
+      const rate = pricingSchema.safeParse(pricing);
+      return {
+        id, displayName: name, provider: providers[id.split('/')[0] ?? ''] ?? 'Провайдер не указан',
+        capabilities: { streaming: 'unknown', reasoning: 'unknown' },
+        pricing: rate.success ? {
+          inputPerMillion: rate.data.input, outputPerMillion: rate.data.output, currency: 'USD',
+          ...(rate.data.cacheRead !== undefined ? { cacheReadPerMillion: rate.data.cacheRead } : {}),
+          ...(rate.data.cacheWrite !== undefined ? { cacheWritePerMillion: rate.data.cacheWrite } : {}),
+        } : null,
+        metadataSource: 'upstream',
+      };
+    });
   }
 
   async generate(input: PreparedPrompt, signal: AbortSignal) {
@@ -121,7 +137,8 @@ export class CodexProxyAdapter implements LlmAdapter {
     if (utf8Bytes(parsed.data.text) > 512 * 1024) throw new AdapterError({
       code: 'OUTPUT_LIMIT', message: 'Ответ модели превышает допустимый размер.', retryable: false,
     });
-    return { text: parsed.data.text };
+    const usage = reportedUsage(parsed.data.usage);
+    return { text: parsed.data.text, ...(usage ? { usage } : {}) };
   }
 
   async *stream(input: PreparedPrompt, signal: AbortSignal, onActivity?: () => void): AsyncGenerator<StreamChunk> {
@@ -142,7 +159,12 @@ export class CodexProxyAdapter implements LlmAdapter {
         if (event.type === 'reasoning-start') yield { type: 'reasoning_started' };
         if (event.type === 'reasoning-delta') yield { type: 'reasoning_delta', text: event.delta };
         if (event.type === 'reasoning-end') yield { type: 'reasoning_ended' };
-        if (event.type === 'finish') { finished = true; break; }
+        if (event.type === 'finish') {
+          finished = true;
+          const usage = reportedUsage(event.usage);
+          if (usage) yield { type: 'usage', usage };
+          break;
+        }
       }
       if (!finished) throw protocolError();
     } catch (error) {

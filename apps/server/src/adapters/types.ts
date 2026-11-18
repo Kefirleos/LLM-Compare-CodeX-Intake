@@ -8,8 +8,14 @@ export interface PreparedPrompt {
 
 export interface GenerationResult {
   text: string;
+  usage?: ReportedUsage;
 }
-export type StreamChunk = string | { type: 'reasoning_started' | 'reasoning_ended' } | { type: 'reasoning_delta'; text: string };
+export interface ReportedUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+export type StreamChunk = string | { type: 'reasoning_started' | 'reasoning_ended' } | { type: 'reasoning_delta'; text: string }
+  | { type: 'usage'; usage: ReportedUsage };
 
 export interface LlmAdapter {
   readonly mode: 'mock' | 'live';

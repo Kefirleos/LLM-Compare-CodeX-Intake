@@ -53,10 +53,11 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
           if (error instanceof AdapterError) return reply.code(503).send(error.publicError);
           return reply.code(503).send({ code: 'CATALOG_UNAVAILABLE', message: 'Не удалось проверить каталог моделей.', retryable: true });
         }
-        const allowed = new Set(catalog.map((model) => model.id));
+        const allowed = new Map(catalog.map((model) => [model.id, model.pricing]));
         if (targets.some((target) => !allowed.has(target.modelId))) return reply.code(422).send({
           code: 'MODEL_UNAVAILABLE', message: 'Одна из моделей недоступна. Обновите каталог.', retryable: false,
         });
+        const pricedTargets = targets.map((target) => ({ ...target, pricing: allowed.get(target.modelId) ?? null }));
         accepted = true;
         if (request.headers.accept === 'application/x-ndjson') {
           reply.hijack();
@@ -110,7 +111,7 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
             return queue;
           };
           try {
-            await streamComparison(adapter, input.prompt, targets, controller.signal, timeoutMs, emit, streamTimeouts);
+            await streamComparison(adapter, input.prompt, pricedTargets, controller.signal, timeoutMs, emit, streamTimeouts);
           } catch {
             controller.abort();
           } finally {
@@ -118,7 +119,7 @@ export function registerComparisons(app: FastifyInstance, adapter: LlmAdapter, t
           }
           return;
         }
-        const results = await runComparison(adapter, input.prompt, targets, controller.signal, timeoutMs);
+        const results = await runComparison(adapter, input.prompt, pricedTargets, controller.signal, timeoutMs);
         return comparisonResponseSchema.parse({
           protocolVersion: 1, conversationId: input.conversationId, runId: input.runId, turnId: input.turnId, results,
         });

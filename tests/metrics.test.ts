@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import { attemptResultSchema } from '@llm-compare/contracts';
 import type { AttemptMetrics, AttemptResult } from '@llm-compare/contracts';
-import { timingLeaders, formatSeconds } from '../apps/web/src/features/comparison/metrics';
+import { comparisonLeaders, formatSeconds } from '../apps/web/src/features/comparison/metrics';
 import type { DisplayResult } from '../apps/web/src/features/comparison/history';
 import { streamComparison } from '../apps/server/src/generation/stream.js';
 import type { OutgoingEvent } from '../apps/server/src/generation/stream.js';
@@ -62,32 +62,52 @@ it('keeps an unobserved first fragment null on timeout', async () => {
   expect(terminal?.type === 'model_result' && terminal.result).toMatchObject({ status: 'timed_out', totalMs: 100, metrics: metrics() });
 });
 
+it('waits for final usage without counting it as an answer or a reasoning phase', async () => {
+  vi.useFakeTimers();
+  const adapter: LlmAdapter = { mode: 'mock', listModels: async () => [], generate: async () => ({ text: '' }), stream: async function* () {
+    await wait(10);
+    yield 'answer';
+    await wait(150);
+    yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 2 } };
+  } };
+  const events: OutgoingEvent[] = [];
+  const done = streamComparison(adapter, 'Q', [target()], new AbortController().signal, 1000, async (event) => { events.push(event); });
+  await vi.advanceTimersByTimeAsync(160);
+  await done;
+  const terminal = events.find((event) => event.type === 'model_result');
+  expect(terminal?.type === 'model_result' && terminal.result).toMatchObject({
+    totalMs: 160, metrics: { firstEventMs: 10, firstAnswerMs: 10, inputTokens: 0, outputTokens: 2, cost: null },
+  });
+  expect(events.filter((event) => event.type.startsWith('reasoning_'))).toHaveLength(0);
+});
+
 it('never ranks failures or unfinished runs, and requires two comparable successes', () => {
   const failed: AttemptResult = { ...success(1), status: 'failed', error: { code: 'GENERATION_FAILED', message: 'error', retryable: true } };
   const results: Record<string, DisplayResult> = { failed, a: success(2000, 200), b: success(3000, 100) };
-  expect([...timingLeaders(results, true).total]).toEqual(['a']);
-  expect([...timingLeaders(results, true).firstAnswer]).toEqual(['b']);
-  expect(timingLeaders(results, false).total.size).toBe(0);
-  expect(timingLeaders({ ...results, pending: { status: 'pending' } }, true).total.size).toBe(0);
-  expect(timingLeaders({ failed, a: success(2000) }, true).total.size).toBe(0);
-  expect(timingLeaders({ a: success(2000, 0), b: success(3000) }, true).firstAnswer.size).toBe(0);
+  expect([...comparisonLeaders(results, true).total]).toEqual(['a']);
+  expect([...comparisonLeaders(results, true).firstAnswer]).toEqual(['b']);
+  expect(comparisonLeaders(results, false).total.size).toBe(0);
+  expect(comparisonLeaders({ ...results, pending: { status: 'pending' } }, true).total.size).toBe(0);
+  expect(comparisonLeaders({ failed, a: success(2000) }, true).total.size).toBe(0);
+  expect(comparisonLeaders({ a: success(2000, 0), b: success(3000) }, true).firstAnswer.size).toBe(0);
 });
 
 it('uses millisecond precision for ties, independently of rounded display values', () => {
-  expect([...timingLeaders({ a: success(1000.1), b: success(1000.4) }, true).total]).toEqual(['a', 'b']);
+  expect([...comparisonLeaders({ a: success(1000.1), b: success(1000.4) }, true).total]).toEqual(['a', 'b']);
   expect(formatSeconds(1001.1)).toBe(formatSeconds(1004.4));
-  expect([...timingLeaders({ a: success(1001.1), b: success(1004.4) }, true).total]).toEqual(['a']);
+  expect([...comparisonLeaders({ a: success(1001.1), b: success(1004.4) }, true).total]).toEqual(['a']);
 });
 
 it('recalculates leaders from the selected retry without using older attempts', () => {
-  expect([...timingLeaders({ a: success(2000, 200), b: success(3000, 300) }, true).total]).toEqual(['a']);
-  expect([...timingLeaders({ a: success(2000, 200), b: success(1000, 100) }, true).total]).toEqual(['b']);
+  expect([...comparisonLeaders({ a: success(2000, 200), b: success(3000, 300) }, true).total]).toEqual(['a']);
+  expect([...comparisonLeaders({ a: success(2000, 200), b: success(1000, 100) }, true).total]).toEqual(['b']);
 });
 
-it.each(['fabricated tokens', 'fabricated cost', 'answer before data', 'fragment after completion', 'negative time'] as const)('rejects invalid metrics: %s', (scenario) => {
+it.each(['fractional tokens', 'cost without counts', 'negative cost', 'answer before data', 'fragment after completion', 'negative time'] as const)('rejects invalid metrics: %s', (scenario) => {
   const result = success(1000, 100);
-  if (scenario === 'fabricated tokens') Object.assign(result.metrics!, { inputTokens: 0 });
-  if (scenario === 'fabricated cost') Object.assign(result.metrics!, { cost: 0 });
+  if (scenario === 'fractional tokens') Object.assign(result.metrics!, { inputTokens: 0.5 });
+  if (scenario === 'cost without counts') Object.assign(result.metrics!, { cost: 0 });
+  if (scenario === 'negative cost') Object.assign(result.metrics!, { inputTokens: 0, outputTokens: 0, cost: -1 });
   if (scenario === 'answer before data') Object.assign(result.metrics!, { firstEventMs: 200 });
   if (scenario === 'fragment after completion') Object.assign(result.metrics!, { firstEventMs: 1100, firstAnswerMs: 1100 });
   if (scenario === 'negative time') Object.assign(result.metrics!, { firstAnswerMs: -1 });

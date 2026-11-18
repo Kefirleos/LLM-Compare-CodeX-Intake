@@ -1,19 +1,21 @@
 import { utf8Bytes } from '@llm-compare/contracts';
-import type { AttemptMetrics, AttemptResult, ComparisonTarget, StreamEvent } from '@llm-compare/contracts';
-import type { LlmAdapter } from '../adapters/types.js';
+import type { AttemptMetrics, AttemptResult, StreamEvent } from '@llm-compare/contracts';
+import type { LlmAdapter, ReportedUsage } from '../adapters/types.js';
 import { AdapterError } from '../adapters/error.js';
 import { DeadlineError, withDeadline, withStreamDeadline, defaultStreamTimeouts } from './deadline.js';
 import type { ActivityClock, StreamTimeouts } from './deadline.js';
+import { usageMetrics } from './metrics.js';
+import type { GenerationTarget } from './metrics.js';
 
 export type OutgoingEvent = StreamEvent extends infer E ? E extends StreamEvent ? Omit<E, 'v' | 'runId' | 'turnId' | 'seq'> : never : never;
 
-export async function streamComparison(adapter: LlmAdapter, prompt: string, targets: ComparisonTarget[],
+export async function streamComparison(adapter: LlmAdapter, prompt: string, targets: readonly GenerationTarget[],
   signal: AbortSignal, timeoutMs: number, emit: (event: OutgoingEvent) => Promise<void>, timeouts: StreamTimeouts = defaultStreamTimeouts) {
   await emit({ type: 'run_started' });
   await Promise.all(targets.map(async (target) => {
     const identity = { columnId: target.columnId, attemptId: target.attemptId, modelId: target.modelId };
     let started = performance.now();
-    const metrics: AttemptMetrics = { firstEventMs: null, firstAnswerMs: null, inputTokens: null, outputTokens: null, cost: null };
+    const metrics: AttemptMetrics = { firstEventMs: null, firstAnswerMs: null, ...usageMetrics() };
     const observe = (answer: boolean) => {
       const elapsed = Math.max(0, performance.now() - started);
       metrics.firstEventMs ??= elapsed;
@@ -60,10 +62,12 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
           await publish({ type: 'answer_delta', ...identity, text: delta }, () => { size = nextSize; text += delta; });
         };
         const prepared = { modelId: target.modelId, prompt, ...(target.history.length ? { history: target.history } : {}) };
+        let usage: ReportedUsage | undefined;
         if (adapter.stream) {
           for await (const chunk of adapter.stream(prepared, attemptSignal, clock?.activity)) {
             attemptSignal.throwIfAborted();
             if (typeof chunk === 'string') { await append(chunk); continue; }
+            if (chunk.type === 'usage') { usage = chunk.usage; continue; }
             if (chunk.type === 'reasoning_ended') {
               if (reasoningStartedAt !== null) { closeReasoning(); await publish({ type: 'reasoning_ended', ...identity }); }
               continue;
@@ -80,12 +84,14 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
             }
           }
         } else {
-          await append((await adapter.generate(prepared, attemptSignal)).text);
+          const generated = await adapter.generate(prepared, attemptSignal);
+          await append(generated.text);
+          usage = generated.usage;
         }
+        return usage;
       };
-      if (adapter.stream) await withStreamDeadline(operation, signal, timeoutMs, timeouts);
-      else await withDeadline(operation, signal, timeoutMs);
-      result = { ...identity, text, metrics: { ...metrics }, ...reasoningResult(), status: 'succeeded', totalMs: performance.now() - started, error: null };
+      const usage = adapter.stream ? await withStreamDeadline(operation, signal, timeoutMs, timeouts) : await withDeadline(operation, signal, timeoutMs);
+      result = { ...identity, text, metrics: { ...metrics, ...usageMetrics(usage, target.pricing) }, ...reasoningResult(), status: 'succeeded', totalMs: performance.now() - started, error: null };
     } catch (error) {
       const status = signal.aborted ? 'cancelled' : error instanceof DeadlineError ? 'timed_out' : 'failed';
       result = { ...identity, text, metrics: { ...metrics }, ...reasoningResult(), status, totalMs: performance.now() - started, error:

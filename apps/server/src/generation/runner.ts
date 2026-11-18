@@ -1,13 +1,15 @@
 import { utf8Bytes } from '@llm-compare/contracts';
-import type { AttemptResult, ComparisonTarget, PublicError } from '@llm-compare/contracts';
+import type { AttemptMetrics, AttemptResult, PublicError } from '@llm-compare/contracts';
 import type { LlmAdapter } from '../adapters/types.js';
 import { DeadlineError, withDeadline } from './deadline.js';
 import { AdapterError } from '../adapters/error.js';
+import { usageMetrics } from './metrics.js';
+import type { GenerationTarget } from './metrics.js';
 
 export async function runComparison(
   adapter: LlmAdapter,
   prompt: string,
-  targets: readonly ComparisonTarget[],
+  targets: readonly GenerationTarget[],
   signal: AbortSignal,
   timeoutMs: number,
 ): Promise<AttemptResult[]> {
@@ -15,7 +17,7 @@ export async function runComparison(
     let startedAt = performance.now();
     const identity = { columnId: target.columnId, attemptId: target.attemptId, modelId: target.modelId };
     const elapsed = () => Math.max(0, performance.now() - startedAt);
-    const metrics = { firstEventMs: null, firstAnswerMs: null, inputTokens: null, outputTokens: null, cost: null };
+    const metrics: AttemptMetrics = { firstEventMs: null, firstAnswerMs: null, ...usageMetrics() };
     try {
       const result = await withDeadline(
         (attemptSignal) => {
@@ -29,7 +31,7 @@ export async function runComparison(
           code: 'OUTPUT_LIMIT', message: 'Ответ превышает допустимый размер или имеет неверный формат.', retryable: false,
         } };
       }
-      return { ...identity, metrics, totalMs: elapsed(), status: 'succeeded', text: result.text, error: null };
+      return { ...identity, metrics: { ...metrics, ...usageMetrics(result.usage, target.pricing) }, totalMs: elapsed(), status: 'succeeded', text: result.text, error: null };
     } catch (error) {
       let status: 'failed' | 'timed_out' | 'cancelled' = 'failed';
       let publicError: PublicError = { code: 'GENERATION_FAILED', message: 'Не удалось получить ответ модели.', retryable: true };

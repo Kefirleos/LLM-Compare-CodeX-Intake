@@ -3,7 +3,7 @@ import { Thinking } from './Thinking';
 import type { DisplayResult } from './history';
 import { AttemptMetrics } from './AttemptMetrics';
 
-export function Answer({ result, retry, disabled, totalLeader, firstAnswerLeader }: { result: DisplayResult | undefined; retry: (() => void) | undefined; disabled: boolean; totalLeader: boolean; firstAnswerLeader: boolean }) {
+export function Answer({ result, retry, disabled, totalLeader, firstAnswerLeader, costLeader }: { result: DisplayResult | undefined; retry: (() => void) | undefined; disabled: boolean; totalLeader: boolean; firstAnswerLeader: boolean; costLeader: boolean }) {
   if (!result) return <p className="muted">Модель добавлена после отправки вопроса. История этой колонки начинается со следующего вопроса.</p>;
   const failed = result.status !== 'succeeded' && result.status !== 'pending';
   return <>
@@ -17,7 +17,7 @@ export function Answer({ result, retry, disabled, totalLeader, firstAnswerLeader
         {retry && ('message' in result || result.error?.retryable) ? <button disabled={disabled} onClick={retry}>Повторить ответ</button>
           : !retry && <p className="muted">Повтор доступен только для последнего вопроса.</p>}
       </div>}
-      {'totalMs' in result && <AttemptMetrics result={result} totalLeader={totalLeader} firstAnswerLeader={firstAnswerLeader} />}
+      {'totalMs' in result && <AttemptMetrics result={result} totalLeader={totalLeader} firstAnswerLeader={firstAnswerLeader} costLeader={costLeader} />}
     </>}
   </>;
 }

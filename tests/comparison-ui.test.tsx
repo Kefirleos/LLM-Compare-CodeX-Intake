@@ -52,7 +52,7 @@ describe('comparison interface', () => {
       result.metrics = { firstEventMs: 100, firstAnswerMs: index === 0 ? 200 : 300, inputTokens: null, outputTokens: null, cost: null };
     });
     act(() => response.results.forEach((result, i) => update!({ v: 1, runId: input.runId, turnId: input.turnId, seq: i + 1, type: 'model_result', result })));
-    expect(screen.queryByRole('list', { name: 'Сравнение времени' })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'Сравнение метрик' })).toBeNull();
     await act(async () => finish(response));
     const first = screen.getByRole('region', { name: 'Ответ Демо · Краткий ответ' });
     const second = screen.getByRole('region', { name: 'Ответ Демо · Подробный ответ' });

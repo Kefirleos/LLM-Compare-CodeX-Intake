@@ -210,3 +210,24 @@ test('Thinking remains separate, follows real phases and survives Stop', async (
   await expect(answer.getByText('First reasoning segment. Second reasoning segment.')).toBeVisible();
   await expect(answer.locator('.markdown')).not.toContainText('reasoning');
 });
+
+test('shows reported tokens and an estimated cost, preserving both after reload', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  let posts = 0;
+  page.on('request', (request) => { if (request.url().endsWith('/api/comparisons')) posts++; });
+  await ready(page);
+  await compare(page, '[fixture:usage]');
+  await completed(page);
+  const answers = page.locator('.answer-cell');
+  await answers.first().getByText('Метрики', { exact: false }).first().click();
+  await expect(answers.first().locator('dl')).toContainText('100');
+  await expect(answers.first().locator('dl')).toContainText('20');
+  await expect(answers.first().locator('dl')).toContainText('0,000014 USD');
+  await expect(answers.first().getByText('Наименьшая оценка стоимости', { exact: true })).toBeVisible();
+  await expect(answers.first().getByText(/без скидок за кэш/)).toBeVisible();
+  await expect(page.locator('.history-toolbar').getByRole('status', { includeHidden: true })).toHaveText('Сохранено на устройстве');
+  await page.reload();
+  await answers.first().getByText('Метрики', { exact: false }).first().click();
+  await expect(answers.first().locator('dl')).toContainText('0,000014 USD');
+  expect(posts).toBe(1);
+});

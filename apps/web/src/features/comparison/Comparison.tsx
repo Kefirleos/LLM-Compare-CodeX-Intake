@@ -8,7 +8,7 @@ import { ModelPicker } from '../models/ModelPicker';
 import { Answer } from './Answer';
 import { buildHistory, skippedTurns } from './history';
 import type { DisplayResult, Turn } from './history';
-import { timingLeaders } from './metrics';
+import { comparisonLeaders } from './metrics';
 import { fetchCatalog } from '../../api/catalog';
 import { WorkspaceHeader } from '../../app/WorkspaceHeader';
 import type { ConversationData } from '../storage/schema';
@@ -264,7 +264,7 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
         </div>)}
         {views.map((view, index) => {
           const visible = Object.fromEntries(columns.flatMap((column) => view.results[column.columnId] ? [[column.columnId, view.results[column.columnId]!]] : []));
-          const leaders = timingLeaders(visible, view !== turn || !busy);
+          const leaders = comparisonLeaders(visible, view !== turn || !busy);
           return <Fragment key={view.turnId}>
           {index > 0 && <div className="question next-question"><span>Ваш вопрос</span><p>{view.prompt}</p></div>}
           {columns.map((column) => <section key={column.columnId} id={view === turn ? `panel-${column.columnId}` : `panel-${view.turnId}-${column.columnId}`}
@@ -272,7 +272,7 @@ export function Comparison({ catalog: initialCatalog, initialConversation, onSna
             aria-labelledby={mobile && view === turn ? `tab-${column.columnId}` : undefined}
             className={`answer-cell${index > 0 ? ' continued-turn' : ''}${selectedId === column.columnId ? ' is-selected' : ''}`} aria-label={`Ответ ${column.model.displayName}`}>
             <Answer result={view.results[column.columnId]} retry={view === turn ? () => retry(column) : undefined} disabled={busy || catalogBlocked || conversationMode !== catalog.mode || !availableIds.has(column.model.id)}
-              totalLeader={leaders.total.has(column.columnId)} firstAnswerLeader={leaders.firstAnswer.has(column.columnId)} />
+              totalLeader={leaders.total.has(column.columnId)} firstAnswerLeader={leaders.firstAnswer.has(column.columnId)} costLeader={leaders.cost.has(column.columnId)} />
           </section>)}
         </Fragment>;
         })}

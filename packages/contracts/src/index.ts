@@ -2,6 +2,15 @@ import { z } from 'zod';
 
 export const capabilitySchema = z.enum(['supported', 'unsupported', 'unknown']);
 
+export const modelPricingSchema = z.strictObject({
+  inputPerMillion: z.number().nonnegative(),
+  outputPerMillion: z.number().nonnegative(),
+  cacheReadPerMillion: z.number().nonnegative().optional(),
+  cacheWritePerMillion: z.number().nonnegative().optional(),
+  currency: z.literal('USD'),
+});
+export type ModelPricing = z.infer<typeof modelPricingSchema>;
+
 export const modelDescriptorSchema = z.strictObject({
   id: z.string().min(1),
   displayName: z.string().min(1),
@@ -10,11 +19,7 @@ export const modelDescriptorSchema = z.strictObject({
     streaming: capabilitySchema,
     reasoning: capabilitySchema,
   }),
-  pricing: z.strictObject({
-    inputPerMillion: z.number().nonnegative(),
-    outputPerMillion: z.number().nonnegative(),
-    currency: z.literal('USD'),
-  }).nullable(),
+  pricing: modelPricingSchema.nullable(),
   metadataSource: z.enum(['mock', 'upstream', 'curated']),
 });
 
@@ -96,10 +101,18 @@ export const retryRequestSchema = z.strictObject({
 export const attemptMetricsSchema = z.strictObject({
   firstEventMs: z.number().nonnegative().nullable(),
   firstAnswerMs: z.number().nonnegative().nullable(),
-  inputTokens: z.null(),
-  outputTokens: z.null(),
-  cost: z.null(),
-}).refine(({ firstEventMs, firstAnswerMs }) => firstAnswerMs === null || (firstEventMs !== null && firstEventMs <= firstAnswerMs), 'Первый ответ не может предшествовать первым данным.');
+  inputTokens: z.number().int().nonnegative().nullable(),
+  outputTokens: z.number().int().nonnegative().nullable(),
+  cost: z.number().nonnegative().nullable(),
+  costBasis: z.strictObject({
+    source: z.literal('catalog'),
+    method: z.literal('standard_input_output'),
+    calculatedAt: z.number().nonnegative(),
+    pricing: modelPricingSchema,
+  }).optional(),
+}).refine(({ firstEventMs, firstAnswerMs }) => firstAnswerMs === null || (firstEventMs !== null && firstEventMs <= firstAnswerMs), 'Первый ответ не может предшествовать первым данным.')
+  .refine(({ inputTokens, outputTokens, cost }) => cost === null || (inputTokens !== null && outputTokens !== null), 'Для оценки стоимости нужны оба счётчика токенов.')
+  .refine(({ cost, costBasis }) => cost === null ? !costBasis : Boolean(costBasis), 'Оценка стоимости должна содержать источник тарифа.');
 export type AttemptMetrics = z.infer<typeof attemptMetricsSchema>;
 
 const resultFields = {
