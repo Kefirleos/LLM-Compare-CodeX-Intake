@@ -25,6 +25,7 @@ export function App() {
       <main>
         <section aria-label="Сравнение языковых моделей" aria-busy={state.status === 'loading'}>
           <ConversationWorkspace catalog={state.status === 'ready' ? state.catalog : null}
+            onCatalogUpdated={(catalog) => setState({ status: 'ready', catalog })}
             catalogNotice={state.status === 'loading' ? <p className="notice" role="status">Загрузка каталога…</p>
               : state.status === 'error' ? <div className="notice" role="alert"><p>{state.message}</p><button onClick={() => setRevision((value) => value + 1)}>Повторить</button></div>
                 : null} />

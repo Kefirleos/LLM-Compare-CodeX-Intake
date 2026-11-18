@@ -39,6 +39,7 @@
     "check:markdown-worker": "node scripts/check-markdown-worker.mjs",
     "check:browser": "playwright test",
     "check:demo": "playwright test --config tests/release/playwright.config.ts",
+    "check:live": "playwright test --config tests/live/playwright.config.ts",
     "start": "npm run start -w @llm-compare/server"
   }
 }

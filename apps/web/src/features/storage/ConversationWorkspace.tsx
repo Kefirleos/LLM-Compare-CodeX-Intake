@@ -28,8 +28,9 @@ const entryFor = (record: SavedConversation): HistoryEntry => ({ id: record.conv
 const activeKey = 'llm-compare-active-conversation';
 function rememberActive(id?: string) { try { if (id) sessionStorage.setItem(activeKey, id); else sessionStorage.removeItem(activeKey); } catch { /* IndexedDB remains usable if sessionStorage is blocked. */ } }
 
-export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactory = defaultRepository }: {
-  catalog: ModelCatalog | null; catalogNotice?: ReactNode; repositoryFactory?: () => ConversationRepository;
+export function ConversationWorkspace({ catalog, catalogNotice, onCatalogUpdated, repositoryFactory = defaultRepository }: {
+  catalog: ModelCatalog | null; catalogNotice?: ReactNode; onCatalogUpdated?: (catalog: ModelCatalog) => void;
+  repositoryFactory?: () => ConversationRepository;
 }) {
   const [ready, setReady] = useState(false);
   const [available, setAvailable] = useState(false);
@@ -221,7 +222,7 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
     actionLock.current = true; setAction(true);
     try {
       if (confirm === 'clear') {
-        state.meta = await state.repository.clear(state.meta.generation); setEntries([]); install();
+        state.meta = await state.repository.clear(state.meta.generation); setEntries([]); setWarning(''); install();
       } else {
         await state.saver?.flush();
         if (state.blocked || !state.data || !state.saver) throw new StorageError('CONFLICT');
@@ -245,6 +246,8 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
   }, []);
 
   const fallback = useMemo<ModelCatalog>(() => ({ protocolVersion: 1, catalogVersion: 'unavailable', mode: pane?.initial?.mode ?? 'mock', models: [] }), [pane]);
+  const canDeleteCurrent = available && entries.some((entry) => entry.id === currentId);
+  const canClearHistory = available && Boolean(entries.length || warning);
   const history = <div className="history-panel" ref={historyPanel}>
     <button className="history-trigger" ref={historyTrigger} aria-expanded={historyOpen} aria-controls="conversation-history"
       onClick={() => { if (historyOpen) closeHistory(); else setHistoryOpen(true); }}>
@@ -259,16 +262,16 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
           <span>{entry.title}</span>{entry.id === currentId && <span aria-hidden="true">✓</span>}
         </button></li>)}
       </ul> : <p className="history-empty">Сохранённых бесед пока нет.</p>}
-      <label className="history-preference">Сохранять на этом устройстве<input type="checkbox" checked={enabled}
-        disabled={!available || action || runtime.current.blocked} onChange={(event) => { void toggle(event.target.checked); }} /></label>
+      {available && <label className="history-preference">Сохранять на этом устройстве<input type="checkbox" checked={enabled}
+        disabled={action || runtime.current.blocked} onChange={(event) => { void toggle(event.target.checked); }} /></label>}
       <span role="status">{!ready ? 'Загрузка локальной истории…' : !enabled ? 'Сохранение отключено' : runtime.current.blocked ? 'Сохранение приостановлено' : saved ? 'Сохранено на устройстве' : available ? 'Автосохранение включено' : 'Работа в памяти'}</span>
       {confirm ? <div className="history-confirm">
         <p>{confirm === 'clear' ? 'Удалить всю локальную историю?' : 'Удалить текущую сохранённую беседу?'}</p>
         <button className="history-danger" disabled={busy || action} onClick={() => { void removeConfirmed(); }}>Подтвердить удаление</button>
         <button disabled={action} onClick={() => setConfirm(null)}>Отмена</button>
-      </div> : <div className="history-actions">
-        <button className="history-danger" disabled={!available || busy || action || !entries.some((entry) => entry.id === currentId)} onClick={() => setConfirm('remove')}>Удалить беседу</button>
-        <button className="history-danger" disabled={!available || busy || action || (!entries.length && !warning)} onClick={() => setConfirm('clear')}>Очистить историю</button>
+      </div> : (canDeleteCurrent || canClearHistory) && <div className="history-actions">
+        {canDeleteCurrent && <button className="history-danger" disabled={busy || action} onClick={() => setConfirm('remove')}>Удалить беседу</button>}
+        {canClearHistory && <button className="history-danger" disabled={busy || action} onClick={() => setConfirm('clear')}>Очистить историю</button>}
       </div>}
     </section>
   </div>;
@@ -281,6 +284,7 @@ export function ConversationWorkspace({ catalog, catalogNotice, repositoryFactor
     </div>}</div>}
   </>;
   if (!ready || !pane || (!catalog && !pane.initial)) return <><WorkspaceHeader history={history} />{notices}</>;
-  return <Comparison key={pane.key} catalog={catalog ?? fallback} {...(pane.initial ? { initialConversation: pane.initial } : {})}
+  return <Comparison key={pane.key} catalog={catalog ?? fallback} catalogReady={catalog !== null}
+    {...(onCatalogUpdated ? { onCatalogUpdated } : {})} {...(pane.initial ? { initialConversation: pane.initial } : {})}
     onSnapshot={snapshot} beforeReset={prepareNew} workspaceLocked={action} history={history} notices={notices} />;
 }

@@ -25,12 +25,12 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
     let reasoning = '';
     let reasoningStartedAt: number | null = null;
     let reasoningMs = 0;
-    const closeReasoning = () => {
-      if (reasoningStartedAt !== null) reasoningMs += performance.now() - reasoningStartedAt;
+    const closeReasoning = (endedAt = performance.now()) => {
+      if (reasoningStartedAt !== null) reasoningMs += endedAt - reasoningStartedAt;
       reasoningStartedAt = null;
     };
-    const reasoningResult = () => {
-      closeReasoning();
+    const reasoningResult = (endedAt: number) => {
+      closeReasoning(endedAt);
       return reasoning || reasoningMs > 0 ? { reasoning, reasoningMs } : {};
     };
     let size = 0;
@@ -91,10 +91,12 @@ export async function streamComparison(adapter: LlmAdapter, prompt: string, targ
         return usage;
       };
       const usage = adapter.stream ? await withStreamDeadline(operation, signal, timeoutMs, timeouts) : await withDeadline(operation, signal, timeoutMs);
-      result = { ...identity, text, metrics: { ...metrics, ...usageMetrics(usage, target.pricing) }, ...reasoningResult(), status: 'succeeded', totalMs: performance.now() - started, error: null };
+      const endedAt = performance.now();
+      result = { ...identity, text, metrics: { ...metrics, ...usageMetrics(usage, target.pricing) }, ...reasoningResult(endedAt), status: 'succeeded', totalMs: endedAt - started, error: null };
     } catch (error) {
+      const endedAt = performance.now();
       const status = signal.aborted ? 'cancelled' : error instanceof DeadlineError ? 'timed_out' : 'failed';
-      result = { ...identity, text, metrics: { ...metrics }, ...reasoningResult(), status, totalMs: performance.now() - started, error:
+      result = { ...identity, text, metrics: { ...metrics }, ...reasoningResult(endedAt), status, totalMs: endedAt - started, error:
         status === 'cancelled' ? { code: 'CANCELLED', message: 'Запрос остановлен.', retryable: true }
           : status === 'timed_out' ? { code: 'TIMEOUT', message: error instanceof DeadlineError && error.reason === 'first_data' ? 'Модель не начала ответ вовремя.'
             : error instanceof DeadlineError && error.reason === 'idle' ? 'Модель слишком долго не присылает данные.' : 'Превышено общее время ответа модели.', retryable: true }

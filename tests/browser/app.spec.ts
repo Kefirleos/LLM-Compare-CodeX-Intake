@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
+import { modelCatalogSchema } from '@llm-compare/contracts';
 
 async function ready(page: Page) { await page.goto('/'); await expect(page.getByLabel('Ваш вопрос')).toBeVisible(); }
 async function add(page: Page, name: string) {
@@ -19,6 +20,85 @@ async function accessible(page: Page) {
   expect(result.violations.map((violation) => ({ id: violation.id, nodes: violation.nodes.map((node) => node.target) }))).toEqual([]);
 }
 
+for (const width of [390, 1440]) {
+  test(`answers expand smoothly with rendered content at ${width}px`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await ready(page);
+    await compare(page, '[fixture:growing]');
+    const viewport = page.locator('.comparison-viewport');
+    const initialHeight = (await viewport.boundingBox())!.height;
+    expect(initialHeight).toBeLessThan(500);
+    await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('A short opening.');
+    await page.screenshot({ path: info.outputPath('compact-response.png') });
+    const samples = await page.evaluate(() => new Promise<number[]>((resolve) => {
+      const heights: number[] = [];
+      const start = performance.now();
+      const sample = () => {
+        heights.push(document.querySelector('.comparison-viewport')!.getBoundingClientRect().height);
+        if (performance.now() - start > 1700) resolve(heights);
+        else requestAnimationFrame(sample);
+      };
+      sample();
+    }));
+    expect(Math.max(...samples)).toBeGreaterThan(initialHeight + 80);
+    expect(new Set(samples.map(Math.round)).size).toBeGreaterThan(4);
+    await expect(page.locator('.answer-cell.is-selected .markdown h2').last()).toHaveText('Section 59');
+    await expect(page.locator('.answer-cell.is-selected .markdown p').last()).toBeInViewport({ ratio: .95 });
+    await expect(page.getByRole('button', { name: 'Остановить' })).toBeVisible();
+    await completed(page);
+    await noOverflow(page);
+    await expect(page.getByText('End of the growing response.', { exact: true }).first()).toBeInViewport({ ratio: .95 });
+    const composer = (await page.locator('.composer').boundingBox())!;
+    expect(composer.y).toBeGreaterThan(800);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(viewport).toHaveCSS('transition-duration', '0s');
+    await expect(viewport).toHaveCSS('animation-name', 'none');
+  });
+}
+
+test('a follow-up moves to the new answers and leaves manual reading in place', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await ready(page);
+  await compare(page, '[fixture:long]');
+  await completed(page);
+  await compare(page, '[fixture:usage]');
+  await completed(page);
+  await expect(page.locator('.next-question')).toBeInViewport();
+  await expect(page.locator('.continued-turn').first().locator('.markdown')).toBeInViewport();
+  const scroll = page.locator('.comparison-scroll');
+  expect(await scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(1000);
+  await scroll.evaluate((element) => { element.scrollTop = 0; });
+  await page.getByLabel('Ваш вопрос').fill('Draft while reading the first answer');
+  expect(await scroll.evaluate((element) => element.scrollTop)).toBe(0);
+  await noOverflow(page);
+});
+
+test('scrolling up during a follow-up lets the user keep reading earlier text', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await ready(page);
+  await compare(page, '[fixture:long]');
+  await completed(page);
+  await compare(page, '[fixture:growing] follow-up');
+
+  const scroll = page.locator('.comparison-scroll');
+  await expect(page.locator('.next-question')).toBeInViewport();
+  const answer = page.locator('.continued-turn.is-selected .markdown');
+  await expect(answer.getByRole('heading', { name: 'Section 59', exact: true })).toBeInViewport();
+  await expect(page.getByRole('button', { name: 'Остановить' })).toBeVisible();
+  await scroll.hover();
+  const position = () => scroll.evaluate((element) => element.scrollTop);
+  const before = await position();
+  await page.mouse.wheel(0, -700);
+  await expect.poll(position).toBeLessThan(before - 650);
+  const paused = await position();
+
+  await completed(page);
+  const tail = answer.getByText('End of the growing response.', { exact: true });
+  await expect(tail).toBeAttached();
+  await expect(tail).not.toBeInViewport();
+  expect(Math.abs(await position() - paused)).toBeLessThan(35);
+});
+
 for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768], [1440, 900]] as const) {
   test(`four columns, sticky headers, overflow and accessibility at ${width}px`, async ({ page }, info) => {
     await page.setViewportSize({ width, height }); await ready(page); await accessible(page);
@@ -30,21 +110,32 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768],
     expect(composer!.y).toBeGreaterThan(height * .2);
     await noOverflow(page);
     await add(page, 'Медленный ответ'); await add(page, 'Ошибка');
-    await expect(page.getByRole('button', { name: 'Добавить модель', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Добавить модель', exact: true })).toHaveCount(0);
     await compare(page, '[fixture:long]'); await completed(page);
     await expect(page.locator('.answer-cell.is-selected .markdown h2').first()).toHaveText('Section 0');
+    await expect.poll(() => page.locator('.workspace').evaluate((element) => element.getAnimations({ subtree: true })
+      .filter((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().endTime !== Infinity).length)).toBe(0);
+    await expect(page.locator('.answer-cell.is-selected .markdown p').last()).toBeInViewport({ ratio: .95 });
+    const scroll = page.locator('.comparison-scroll');
+    const viewport = page.locator('.comparison-viewport');
+    await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect(viewport).not.toHaveAttribute('data-more-below', '');
+    await scroll.evaluate((element) => { element.scrollTop = 0; });
+    await expect(viewport).toHaveAttribute('data-more-below', '');
     await noOverflow(page);
     const question = page.locator('.question-bar');
     const questionBox = (await question.boundingBox())!;
-    const promptBox = (await question.getByText('[fixture:long]', { exact: true }).boundingBox())!;
-    const grid = (await page.locator('.comparison-grid').boundingBox())!;
-    expect(questionBox.width).toBeCloseTo(grid.width, 0);
-    expect(promptBox.x - questionBox.x).toBeLessThan(110);
-    expect(promptBox.y + promptBox.height).toBeLessThan(grid.y);
+    const board = (await page.locator('.comparison-board').boundingBox())!;
+    const sticky = width <= 1000 ? page.locator('.mobile-model-bar') : page.locator('.desktop-models');
+    const headerBox = (await sticky.boundingBox())!;
+    expect(questionBox.width).toBeLessThan(board.width * .9);
+    expect(questionBox.x + questionBox.width).toBeCloseTo(board.x + board.width, 0);
+    if (width > 1000) expect(questionBox.y).toBeGreaterThan(headerBox.y + headerBox.height);
+    else expect(questionBox.y + questionBox.height).toBeLessThan(headerBox.y);
     if (width === 390 || width === 1440) await page.screenshot({ path: info.outputPath(`question-${width}.png`) });
-    await page.locator('.comparison-scroll').evaluate((element) => { element.scrollTop = 800; });
-    const scrollBox = await page.locator('.comparison-scroll').boundingBox();
-    const sticky = width <= 1000 ? page.getByRole('tablist') : page.locator('.column-heading.is-selected');
+    await expect(page.locator('.model-add-column')).toHaveCount(0);
+    await scroll.evaluate((element) => { element.scrollTop = 800; });
+    const scrollBox = await scroll.boundingBox();
     const stickyBox = await sticky.boundingBox();
     expect(Math.abs(stickyBox!.y - scrollBox!.y)).toBeLessThan(3);
     if (width <= 1000) {
@@ -71,6 +162,95 @@ for (const [width, height] of [[320, 640], [390, 844], [768, 1024], [1024, 768],
     await expect(popover).toBeHidden();
   });
 }
+
+test('opens the picker from the entire right-hand column and keeps its anchor visible on scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await ready(page);
+  await compare(page, '[fixture:long]');
+  await completed(page);
+  const addButton = page.getByRole('button', { name: 'Добавить модель', exact: true });
+  const scroll = page.locator('.comparison-scroll');
+  await expect(page.locator('.answer-cell .markdown h2').last()).toHaveText('Section 59');
+  await expect.poll(() => scroll.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(400);
+  await scroll.evaluate((element) => { element.scrollTop = 400; });
+  const viewport = (await scroll.boundingBox())!;
+  const anchor = (await addButton.locator('.model-add-anchor').boundingBox())!;
+  expect(Math.abs(anchor.y - viewport.y)).toBeLessThan(3);
+  const clickY = viewport.y + viewport.height * .75;
+  expect(clickY).toBeGreaterThan(anchor.y + anchor.height + 100);
+  await page.mouse.click(anchor.x + anchor.width / 2, clickY);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toHaveAttribute('data-placement', 'below');
+  const picker = (await dialog.boundingBox())!;
+  expect(picker.x + picker.width).toBeCloseTo(anchor.x + anchor.width, 0);
+  expect(picker.y).toBeCloseTo(anchor.y + anchor.height + 8, 0);
+  await page.mouse.click(10, 80);
+  await expect(dialog).toHaveCount(0);
+  await expect(addButton).toBeFocused();
+  expect(await scroll.evaluate((element) => element.scrollTop)).toBe(400);
+  await addButton.press('Enter');
+  await dialog.getByRole('button', { name: /Медленный ответ/ }).click();
+  await expect(page.locator('.comparison-grid .answer-cell')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: /Ответ Демо · Медленный ответ/ })).toContainText('начинается со следующего вопроса');
+  await expect(addButton).toBeFocused();
+});
+
+test('mobile controls follow the selected tab and the form stays at the bottom after a short answer', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await ready(page);
+  const refresh = page.getByRole('button', { name: 'Обновить модели' });
+  await expect(refresh).toHaveCount(0);
+  await page.getByRole('button', { name: 'История', exact: true }).click();
+  await expect(page.getByText('Сохранённых бесед пока нет.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Удалить беседу|Очистить историю/ })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await compare(page, '[fixture:usage]');
+  await completed(page);
+  await expect(refresh).toBeVisible();
+  await expect.poll(async () => {
+    const box = (await page.locator('.composer').boundingBox())!;
+    return Math.round(box.y + box.height);
+  }).toBe(844);
+  const addButton = page.locator('.mobile-model-switch').getByRole('button', { name: 'Добавить модель' });
+  await addButton.click();
+  await page.getByRole('dialog').getByRole('button', { name: /Медленный ответ/ }).click();
+  const tabs = page.getByRole('tab');
+  await expect(tabs.last()).toHaveAttribute('aria-selected', 'true');
+  const remove = page.locator('.mobile-model-heading').getByRole('button', { name: /Удалить.*Медленный ответ/ });
+  await expect(remove).toBeVisible();
+  await expect(page.getByRole('tabpanel')).toContainText('начинается со следующего вопроса');
+  await remove.click();
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.last()).toBeFocused();
+  await expect(page.locator('.mobile-model-heading').getByRole('button', { name: /^Удалить/ })).toHaveCount(0);
+  await expect(addButton).toBeEnabled();
+  await page.getByRole('button', { name: 'Новое сравнение' }).click();
+  await expect(refresh).toHaveCount(0);
+  await expect(page.getByLabel('Ваш вопрос')).toBeFocused();
+});
+
+test('the composer shows a single keyboard focus border around the card', async ({ page }) => {
+  await ready(page);
+  const input = page.getByLabel('Ваш вопрос');
+  const frame = page.locator('.composer-input');
+  const label = page.locator('.composer-label');
+  const focusColor = 'rgb(136, 150, 143)';
+
+  await input.focus();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveCSS('outline-style', 'none');
+  await expect(label).toHaveCSS('border-top-color', focusColor);
+  await expect(frame).toHaveCSS('border-bottom-color', focusColor);
+
+  await compare(page, '[fixture:usage]');
+  await completed(page);
+  await input.focus();
+  await expect(input).toHaveCSS('outline-style', 'none');
+  await expect(frame).toHaveCSS('border-bottom-color', focusColor);
+  await page.emulateMedia({ forcedColors: 'active' });
+  await expect(input).toHaveCSS('outline-style', 'solid');
+});
 
 test('picker keyboard, focus return and IME/Shift+Enter', async ({ page }) => {
   await ready(page);
@@ -124,16 +304,22 @@ test('real worker reveals words, keeps DOM/focus/selection and blocks external M
   await expect(page.locator('.markdown-fallback')).toHaveCount(0); expect(external).toEqual([]); expect(failures).toEqual([]);
 });
 
-test('Stop flushes the accepted tail and a hidden mobile model keeps receiving data', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 }); await ready(page); await compare(page, '[fixture:stream]');
-  await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible();
-  const tabs = page.getByRole('tab'); await tabs.last().click();
-  await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible();
-  await page.getByRole('button', { name: 'Остановить', exact: true }).click();
-  await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('partial');
-  await expect(page.locator('.run-status')).toHaveText('Сравнение завершено.');
-  await page.waitForTimeout(2700); await expect(page.locator('.markdown').filter({ hasText: 'Browser fixture complete.' })).toHaveCount(0);
-  await noOverflow(page);
+test.describe('touch controls', () => {
+  test.use({ hasTouch: true });
+
+  test('Stop flushes the accepted tail and a hidden mobile model keeps receiving data', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 }); await ready(page); await compare(page, '[fixture:stream]');
+    await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible();
+    await expect(page.locator('.context-note')).toHaveCount(0);
+    const tabs = page.getByRole('tab'); await tabs.last().tap();
+    await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible();
+    await page.getByRole('button', { name: 'Остановить', exact: true }).tap();
+    await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('partial');
+    await expect(page.locator('.run-status')).toHaveText('Сравнение остановлено.');
+    await expect(page.getByLabel('Ваш вопрос')).not.toBeFocused();
+    await page.waitForTimeout(2700); await expect(page.locator('.markdown').filter({ hasText: 'Browser fixture complete.' })).toHaveCount(0);
+    await noOverflow(page);
+  });
 });
 
 test('reload restores a partial checkpoint without resubmitting, then cross-tab conflicts stay local', async ({ page, context }) => {
@@ -142,6 +328,7 @@ test('reload restores a partial checkpoint without resubmitting, then cross-tab 
   await ready(page); await compare(page, '[fixture:stream]');
   await expect(page.locator('.answer-cell.is-selected pre code')).toBeVisible(); await expect(historyStatus).toHaveText('Сохранено на устройстве');
   await page.reload(); await expect(page.getByText(/Страница была закрыта до завершения ответа/).first()).toBeVisible();
+  await expect(page.locator('.run-status')).toHaveText('Сравнение прервано.');
   expect(posts).toBe(1); await expect(page.locator('.answer-cell.is-selected .markdown')).toContainText('partial');
   // Loading an interrupted checkpoint leaves its saved revision intact.
   await expect(historyStatus).toHaveText('Сохранено на устройстве');
@@ -152,6 +339,56 @@ test('reload restores a partial checkpoint without resubmitting, then cross-tab 
   await expect(historyStatus).toHaveText('Сохранено на устройстве');
   await expect(conflict).toBeVisible();
   await second.reload(); await expect(second.getByLabel('Ваш вопрос')).toHaveValue('updated in first tab'); expect(posts).toBe(1);
+});
+
+test('keeps the refreshed catalog across conversations and recovers from a startup catalog error', async ({ page }) => {
+  const initial = page.waitForResponse((response) => response.url().endsWith('/api/models') && response.ok());
+  await ready(page);
+  const catalog = modelCatalogSchema.parse(await (await initial).json());
+  let currentCatalog = catalog;
+  let offline = false;
+  await page.route(/\/api\/models(?:\?refresh=1)?$/, async (route) => {
+    if (offline) await route.fulfill({ status: 503, json: { code: 'CATALOG_UNAVAILABLE', message: 'Каталог временно недоступен.', retryable: true } });
+    else await route.fulfill({ json: currentCatalog });
+  });
+
+  for (const prompt of ['Первая беседа', 'Вторая беседа']) {
+    await compare(page, prompt);
+    await completed(page);
+    await expect(page.locator('.history-toolbar').getByRole('status', { includeHidden: true })).toHaveText('Сохранено на устройстве');
+    if (prompt === 'Первая беседа') await page.getByRole('button', { name: 'Новое сравнение' }).click();
+  }
+
+  currentCatalog = { ...catalog, models: catalog.models.slice(1) };
+  const refresh = page.getByRole('button', { name: 'Обновить модели' });
+  const unavailable = page.getByText(/Выбранная модель больше недоступна/);
+  await refresh.click();
+  await expect(unavailable).toBeVisible();
+  await page.getByRole('button', { name: 'История', exact: true }).click();
+  await page.getByRole('button', { name: 'Первая беседа', exact: true }).click();
+  await expect(page.locator('.question-bar p')).toHaveText('Первая беседа');
+  const input = page.getByLabel('Ваш вопрос');
+  const send = page.getByRole('button', { name: 'Сравнить', exact: true });
+  await input.fill('Черновик продолжения');
+  await expect(unavailable).toBeVisible();
+  await expect(send).toBeDisabled();
+  await expect(page.locator('.history-toolbar').getByRole('status', { includeHidden: true })).toHaveText('Сохранено на устройстве');
+
+  offline = true;
+  await page.reload();
+  const offlineAlert = page.getByRole('alert').filter({ hasText: 'Каталог временно недоступен.' });
+  await expect(page.locator('.question-bar p')).toHaveText('Первая беседа');
+  await expect(offlineAlert).toBeVisible();
+  await expect(refresh).toHaveCount(0);
+  await expect(page.getByText('Для сравнения нужны хотя бы две доступные модели.')).toHaveCount(0);
+  await expect(send).toBeDisabled();
+  offline = false;
+  currentCatalog = catalog;
+  await offlineAlert.getByRole('button', { name: 'Повторить', exact: true }).click();
+  await expect(offlineAlert).toHaveCount(0);
+  await expect(input).toHaveValue('Черновик продолжения');
+  await expect(send).toBeEnabled();
+  await expect(refresh).toBeVisible();
 });
 
 test('reduced motion and a short mobile viewport keep the composer usable', async ({ page }) => {
@@ -219,7 +456,13 @@ test('shows reported tokens and an estimated cost, preserving both after reload'
   await compare(page, '[fixture:usage]');
   await completed(page);
   const answers = page.locator('.answer-cell');
-  await answers.first().getByText('Метрики', { exact: false }).first().click();
+  await expect(answers.first().locator('.answer-cost')).toHaveText('≈ 0,000014 USD');
+  const chevron = answers.first().locator('.metrics-chevron');
+  const closedDirection = await chevron.evaluate((element) => getComputedStyle(element).transform);
+  await answers.first().getByText('Метрики', { exact: true }).click();
+  await expect(chevron).not.toHaveCSS('transform', closedDirection);
+  await expect(answers.first().getByText('Первый фрагмент ответа', { exact: true })).toBeVisible();
+  await expect(answers.first().getByText('Первый фрагмент Thinking', { exact: true })).toHaveCount(0);
   await expect(answers.first().locator('dl')).toContainText('100');
   await expect(answers.first().locator('dl')).toContainText('20');
   await expect(answers.first().locator('dl')).toContainText('0,000014 USD');

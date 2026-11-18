@@ -1,6 +1,7 @@
 import type { DisplayResult } from './history';
 
 export function formatSeconds(ms: number): string {
+  if (ms > 0 && ms < 10) return '<0,01 с';
   return `${(ms / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} с`;
 }
 

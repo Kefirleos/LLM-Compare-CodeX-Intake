@@ -55,9 +55,12 @@ export function Composer({ draft, busy, disabled, onChange, onSubmit, onStop, re
         }} />
       <div className="composer-actions">
         {modelControls}
-        {busy && onStop ? <button className="submit-button" type="button" onClick={onStop}>Остановить</button>
-          : <button className="submit-button" type="submit" disabled={busy || disabled || !draft.trim()}>
-            {busy ? 'Ожидание…' : 'Сравнить'}<span aria-hidden="true" className="submit-arrow">↑</span>
+        {busy && onStop ? <button className="submit-button composer-round-button" type="button" aria-label="Остановить" title="Остановить"
+          onClick={(event) => { onStop(); if (event.detail === 0) textarea.current?.focus(); }}>
+          <span className="submit-stop" aria-hidden="true" />
+        </button>
+          : <button className={`submit-button${followUp ? ' composer-round-button' : ''}`} type="submit" aria-label="Сравнить" title="Сравнить" disabled={busy || disabled || !draft.trim()}>
+            {!followUp && 'Сравнить'}<span aria-hidden="true" className="submit-arrow">↑</span>
           </button>}
       </div>
     </div>

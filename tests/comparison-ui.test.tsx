@@ -65,7 +65,9 @@ describe('comparison interface', () => {
     expect(within(second).getByText('Минимальное общее время')).toBeTruthy();
     expect(within(second).queryByText('Минимальное время до ответа')).toBeNull();
     expect(within(first).getAllByText('нет данных')).toHaveLength(3);
-    expect(within(first).getByText('Полный ответ')).toBeTruthy();
+    expect(within(first).getByText('Общее время')).toBeTruthy();
+    expect(within(first).getByText('Первый фрагмент Thinking').nextElementSibling?.textContent).toBe('0,1 с');
+    expect(within(first).getByText('Первый фрагмент ответа').nextElementSibling?.textContent).toBe('0,2 с');
   });
 
   it('continues separate histories and retries the latest question with its original snapshot', async () => {
@@ -208,9 +210,7 @@ describe('comparison interface', () => {
 
   it('starts with two models and prevents removing either one', async () => {
     await mount();
-    const remove = screen.getAllByRole('button', { name: /^Удалить/ }) as HTMLButtonElement[];
-    expect(remove).toHaveLength(2);
-    expect(remove.every((button) => button.disabled)).toBe(true);
+    expect(screen.queryAllByRole('button', { name: /^Удалить/ })).toHaveLength(0);
     expect((screen.getByRole('button', { name: 'Сравнить' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -229,7 +229,7 @@ describe('comparison interface', () => {
     expect(document.activeElement).toBe(add);
     await user.click(add);
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Ошибка/ }));
-    expect((add as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Добавить модель' })).toBeNull();
     expect(screen.getAllByRole('button', { name: /^Удалить/ })).toHaveLength(4);
     expect(document.activeElement).toBe(screen.getByLabelText('Ваш вопрос'));
   });
@@ -269,6 +269,46 @@ describe('comparison interface', () => {
     expect(retry.target.modelId).toBe('mock-detailed');
     expect('targets' in retry).toBe(false);
     expect((screen.getByLabelText('Ваш вопрос') as HTMLTextAreaElement).value).toBe('Новый черновик');
+  });
+
+  it('keeps other answers and their metric badges in place throughout a failed retry', async () => {
+    let rejectRetry!: (error: Error) => void;
+    send.mockImplementationOnce(async (input) => {
+      const response = responseFor(input);
+      Object.assign(response.results.at(-1)!, {
+        status: 'failed', text: '', error: { code: 'GENERATION_FAILED', message: 'Тестовая ошибка', retryable: true },
+      });
+      response.results[1]!.totalMs = 100;
+      return response;
+    }).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRetry = reject; }));
+
+    await mount();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Добавить модель' }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Ошибка/ }));
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Вопрос для трёх моделей');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Тестовая ошибка');
+
+    const successful = within(screen.getByRole('region', { name: 'Ответ Демо · Краткий ответ' }));
+    await user.click(successful.getByText('Метрики'));
+    const badge = successful.getByText('Минимальное общее время');
+    const answer = successful.getByText('Ответ mock-clear');
+    const failed = within(screen.getByRole('region', { name: 'Ответ Демо · Ошибка' }));
+    await user.click(failed.getByRole('button', { name: 'Повторить ответ' }));
+
+    expect(failed.getByText('Получение ответа…')).toBeTruthy();
+    expect(successful.queryByText('Получение ответа…')).toBeNull();
+    expect(successful.getByText('Минимальное общее время')).toBe(badge);
+    expect(successful.getByText('Ответ mock-clear')).toBe(answer);
+    expect(badge.closest('details')?.open).toBe(true);
+    expect(send.mock.calls[1]![0]).toMatchObject({ target: { modelId: 'mock-error' } });
+
+    await act(async () => rejectRetry(new Error('Поток повтора прерван')));
+    expect(failed.getByText('Поток повтора прерван')).toBeTruthy();
+    expect(screen.getAllByText('Поток повтора прерван')).toHaveLength(1);
+    expect(successful.getByText('Минимальное общее время')).toBe(badge);
+    expect(failed.getByRole('button', { name: 'Повторить ответ' })).toHaveProperty('disabled', false);
   });
 
   it('keeps a changed draft after transport failure and allows explicit restoration', async () => {
@@ -343,6 +383,28 @@ describe('comparison interface', () => {
     await user.click(screen.getByRole('button', { name: 'Обновить модели' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Сравнить' }) as HTMLButtonElement).disabled).toBe(false));
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps catalog recovery available after resetting a comparison with a refresh error', async () => {
+    send.mockImplementation(async (input) => responseFor(input));
+    fetchModels.mockRejectedValue(new Error('Network failed'));
+    await mount();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Ответ mock-clear');
+    await user.click(screen.getByRole('button', { name: 'Обновить модели' }));
+    await screen.findByText(/Не удалось обновить каталог/);
+    await user.click(screen.getByRole('button', { name: 'Новое сравнение' }));
+    expect(screen.getByRole('heading', { name: 'Новое сравнение' })).toBeTruthy();
+    const models = await new FakeAdapter().listModels(new AbortController().signal);
+    fetchModels.mockResolvedValue({ protocolVersion: 1, catalogVersion: 'fresh', mode: 'mock', models });
+    await user.click(screen.getByRole('button', { name: 'Обновить модели' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Обновить модели' })).toBeNull());
+    await user.type(screen.getByLabelText('Ваш вопрос'), 'Новый вопрос');
+    await user.click(screen.getByRole('button', { name: 'Сравнить' }));
+    await screen.findByText('Ответ mock-clear');
+    expect(send).toHaveBeenCalledTimes(2);
   });
 });
 

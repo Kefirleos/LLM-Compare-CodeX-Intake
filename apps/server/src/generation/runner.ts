@@ -26,12 +26,13 @@ export async function runComparison(
         },
         signal, timeoutMs,
       );
+      const totalMs = elapsed();
       if (typeof result.text !== 'string' || utf8Bytes(result.text) > 512 * 1024) {
-        return { ...identity, metrics, totalMs: elapsed(), status: 'failed', text: '', error: {
+        return { ...identity, metrics, totalMs, status: 'failed', text: '', error: {
           code: 'OUTPUT_LIMIT', message: 'Ответ превышает допустимый размер или имеет неверный формат.', retryable: false,
         } };
       }
-      return { ...identity, metrics: { ...metrics, ...usageMetrics(result.usage, target.pricing) }, totalMs: elapsed(), status: 'succeeded', text: result.text, error: null };
+      return { ...identity, metrics: { ...metrics, ...usageMetrics(result.usage, target.pricing) }, totalMs, status: 'succeeded', text: result.text, error: null };
     } catch (error) {
       let status: 'failed' | 'timed_out' | 'cancelled' = 'failed';
       let publicError: PublicError = { code: 'GENERATION_FAILED', message: 'Не удалось получить ответ модели.', retryable: true };

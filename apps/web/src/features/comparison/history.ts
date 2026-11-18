@@ -16,5 +16,8 @@ export function buildHistory(turns: readonly Turn[], columnId: string): HistoryP
 }
 
 export function skippedTurns(turns: readonly Turn[], columnId: string): number {
-  return turns.filter((turn) => turn.results[columnId] && turn.results[columnId]!.status !== 'succeeded').length;
+  return turns.filter((turn) => {
+    const status = turn.results[columnId]?.status;
+    return status && status !== 'pending' && status !== 'succeeded';
+  }).length;
 }

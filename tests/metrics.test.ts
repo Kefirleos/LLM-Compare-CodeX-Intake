@@ -33,7 +33,7 @@ it('measures real content/reasoning arrival from upstream start, excluding initi
   await vi.advanceTimersByTimeAsync(550);
   await done;
   const terminal = events.find((event) => event.type === 'model_result');
-  expect(terminal?.type === 'model_result' && terminal.result).toMatchObject({ totalMs: 500, metrics: metrics(100, 200) });
+  expect(terminal?.type === 'model_result' && terminal.result).toMatchObject({ totalMs: 500, reasoningMs: 200, metrics: metrics(100, 200) });
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -96,6 +96,12 @@ it('uses millisecond precision for ties, independently of rounded display values
   expect([...comparisonLeaders({ a: success(1000.1), b: success(1000.4) }, true).total]).toEqual(['a', 'b']);
   expect(formatSeconds(1001.1)).toBe(formatSeconds(1004.4));
   expect([...comparisonLeaders({ a: success(1001.1), b: success(1004.4) }, true).total]).toEqual(['a']);
+});
+
+it('distinguishes a measured fraction of a centisecond from zero', () => {
+  expect(formatSeconds(0)).toBe('0 с');
+  expect(formatSeconds(1)).toBe('<0,01 с');
+  expect(formatSeconds(10)).toBe('0,01 с');
 });
 
 it('recalculates leaders from the selected retry without using older attempts', () => {

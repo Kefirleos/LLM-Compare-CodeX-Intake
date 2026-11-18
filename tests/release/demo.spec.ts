@@ -9,7 +9,10 @@ test('built demo: models, two turns, isolated retry and local history', async ({
     if (request.method() === 'POST' && /\/api\/(comparisons|retries)$/.test(url.pathname)) requests.push({ route: url.pathname, body: request.postDataJSON() });
   });
   await context.route('**/*', (route) => new URL(route.request().url()).origin === baseURL ? route.continue() : route.abort());
-  await page.goto('/');
+  const [catalogResponse] = await Promise.all([
+    page.waitForResponse((response) => response.url() === `${baseURL}/api/models`),
+    page.goto('/'),
+  ]);
   const initialPrompt = 'Когда нужен Redis?';
   const nextPrompt = 'Когда достаточно памяти процесса?';
   const input = page.getByRole('textbox', { name: 'Ваш вопрос' });
@@ -19,7 +22,7 @@ test('built demo: models, two turns, isolated retry and local history', async ({
     await input.press('Enter');
     await expect(finished).toBeVisible();
   };
-  const catalog = await (await page.request.get('/api/models')).json();
+  const catalog = await catalogResponse.json();
   expect(catalog.mode).toBe('mock');
   expect(catalog.models).toHaveLength(4);
   await ask(initialPrompt);
@@ -30,6 +33,7 @@ test('built demo: models, two turns, isolated retry and local history', async ({
   await page.getByRole('button', { name: 'Добавить модель', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: /Ошибка/ }).click();
   await ask(nextPrompt);
+  await expect(page.getByRole('table')).toHaveCount(2);
   const next = requests[1]?.body.targets;
   expect(next?.map((target) => target.history.length)).toEqual([1, 1, 0]);
   expect(next?.slice(0, 2).map((target) => target.history[0]?.user)).toEqual([initialPrompt, initialPrompt]);
@@ -55,6 +59,7 @@ test('built demo: models, two turns, isolated retry and local history', async ({
   await page.getByRole('region', { name: 'История бесед' }).getByRole('button', { name: initialPrompt, exact: true }).click();
   await expect(page.getByText(nextPrompt, { exact: true })).toBeVisible();
   await expect(input).toHaveValue('Черновик перед перезагрузкой');
+  await expect(page.getByRole('table')).toHaveCount(2);
   expect(requests).toHaveLength(3);
   expect(external).toEqual([]);
   await page.screenshot({ path: info.outputPath('demo.png') });

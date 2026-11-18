@@ -11,6 +11,17 @@ adapter.listModels = async (signal) => (await listModels(signal)).map((model, in
 }));
 const stream = adapter.stream.bind(adapter);
 adapter.stream = async function* (input, signal) {
+  if (input.prompt.startsWith('[fixture:growing]')) {
+    await delay(700, undefined, { signal });
+    yield 'A short opening.';
+    await delay(900, undefined, { signal });
+    yield '\n\n' + Array.from({ length: 6 }, () => 'Room for the next paragraph.').join('\n\n');
+    await delay(1200, undefined, { signal });
+    yield '\n\n' + longAnswer;
+    await delay(1500, undefined, { signal });
+    yield '\n\nEnd of the growing response.';
+    return;
+  }
   if (input.prompt.startsWith('[fixture:usage]')) {
     yield 'A completed answer.';
     await delay(300, undefined, { signal });
